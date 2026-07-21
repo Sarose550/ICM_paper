@@ -7,8 +7,8 @@
 \usepackage{natbib}
 \usepackage[margin=1in]{geometry}
 \usepackage{microtype}
-\usepackage{bm}
 \usepackage{graphicx}
+\usepackage[section]{placeins}
 
 \newtheorem{theorem}{Theorem}[section]
 \newtheorem{lemma}[theorem]{Lemma}
@@ -17,9 +17,6 @@
 \newtheorem{definition}[theorem]{Definition}
 \newtheorem{remark}[theorem]{Remark}
 
-\DeclareMathOperator{\poly}{poly}
-\DeclareMathOperator{\erfc}{erfc}
-\DeclareMathOperator{\corr}{corr}
 \newcommand{\bigO}{\mathcal{O}}
 \newcommand{\ip}[2]{\langle #1,\, #2 \rangle}
 
@@ -40,17 +37,18 @@ expected prize money, but exact computation requires summing over all
 $n!$ elimination orderings. I present a deterministic algorithm that
 reformulates ICM equity as a one-dimensional integral over
 generating-function coefficients, evaluated by Gaussian quadrature
-($Q = 256$ nodes, relative error ${<}\,5 \times 10^{-12}$). The
-central challenge---computing leave-one-out polynomial products for all
-$n$ players---is solved by an FFT-accelerated subproduct tree whose
+($Q = 256$ nodes, relative error ${<}\,1.6 \times 10^{-10}$). The
+central challenge - computing leave-one-out polynomial products for all
+$n$ players - is solved by an FFT-accelerated subproduct tree whose
 propagation phase is the adjoint of its build phase, reducing cost from
 $\bigO(nk)$ to $\bigO(n \log^2 k)$ per quadrature point. A roofline
 cost model with harmonic-mean bandwidth blending dispatches
 automatically between a batched linear engine and a hybrid block-tree
-engine. Implementations for Apple M3~Pro, AMD Zen~4 (with AOCL-FFTW),
-and NVIDIA B200 GPU are evaluated: the GPU computes 6.3 million player
-equities ($k = 100$) in 626\,ms, and all 262{,}144 equities at $k = n$
-in 117.9\,ms.
+engine. I evaluate the CPU implementation in detail on Apple M3~Pro and
+AMD Zen~4 (with AOCL-FFTW): the hybrid and linear engines compute exact
+equities for up to 17,216 players in one second, single-threaded, on
+Zen~4. A CUDA implementation for NVIDIA B200 extends this to roughly
+1.5 million players in about a second.
 \end{abstract}
 
 % ======================================================================
@@ -59,13 +57,12 @@ in 117.9\,ms.
 
 Multi-table poker tournaments are structured competitions in which
 players begin with equal chip stacks and are progressively eliminated as
-they lose their chips. A payout structure $(\pi_1, \pi_2, \ldots,
-\pi_k)$ specifies the prize awarded to each finishing position, with
+they lose their chips. A payout structure $\pi = (\pi_1, \pi_2, \ldots, \pi_k)$ specifies the prize awarded to each finishing position, with
 $k \leq n$ positions receiving nonzero prizes and $\pi_1 \geq \pi_2 \geq
 \cdots \geq \pi_k \geq 0$. The \emph{Independent Chip Model} (ICM)
 provides a principled mapping from a player's chip stack to their
-expected tournament equity---the expected prize money they will
-receive~\citep{malmuth2001,harville1973}.
+expected tournament equity - the expected prize money they will
+receive~\citep{malmuth1987,harville1973}.
 
 Despite its central role in tournament strategy, exact ICM computation
 is fundamentally difficult because the number of possible elimination
@@ -73,7 +70,7 @@ orderings grows factorially in $n$. For $n = 20$ there are $2.4 \times
 10^{18}$ orderings to consider; for $n = 30$, the count reaches
 $2.7 \times 10^{32}$. Bitmask dynamic programming reduces this to
 $\bigO(n \cdot 2^n)$ time by iterating over subsets of surviving
-players~\citep{malmuth2001}, but the exponential state space limits
+players~\citep{malmuth1987}, but the exponential state space limits
 practical computation to roughly $n \leq 23$. Monte Carlo sampling
 provides approximate solutions for larger fields~\citep{icmizer2024},
 but error shrinks only as $\bigO(1/\sqrt{N})$, making high-precision
@@ -93,7 +90,7 @@ remaining challenge is evaluating the integrand efficiently at each
 quadrature point, which requires computing a degree-$k$ leave-one-out
 polynomial product for each of $n$ players. I address this with an
 FFT-accelerated binary subproduct tree whose propagation phase is the
-adjoint of the build phase---a cross-correlation that distributes the
+adjoint of the build phase - a cross-correlation that distributes the
 payout vector to all leaves simultaneously.
 
 My contributions are:
@@ -110,8 +107,8 @@ My contributions are:
     replacing simpler FMA-counting models (Section~\ref{sec:dispatch}).
   \item Platform-specific implementations for ARM64 (Apple M3~Pro),
     x86-64 (AMD Zen~4 with AOCL-FFTW), and CUDA (NVIDIA B200 GPU),
-    demonstrating the approach at scale (Sections~\ref{sec:experiments}
-    and~\ref{sec:gpu}).
+    demonstrating the approach at scale (Sections~\ref{sec:experiments},
+    \ref{sec:gpu}, and~\ref{sec:gpu-results}).
 \end{enumerate}
 
 % ======================================================================
@@ -121,7 +118,7 @@ My contributions are:
 \paragraph{ICM and the Malmuth--Harville model.}
 The probability model underlying ICM was introduced by
 \citet{harville1973} for horse-racing handicapping and adapted to poker
-tournaments by \citet{malmuth2001}. Under this model, the probability
+tournaments by \citet{malmuth1987}. Under this model, the probability
 that any surviving player is eliminated next is proportional to their
 chip stack. The standard exact algorithm uses bitmask dynamic programming
 over all $2^n$ subsets of surviving players, running in
@@ -130,7 +127,7 @@ prevailing approach, with error converging as $\bigO(1/\sqrt{N})$.
 
 \paragraph{Exponential clock formulation.}
 The equivalence between the Malmuth--Harville elimination process and
-independent exponential clocks was noted by Tysen Streib in a 2012
+independent exponential clocks was noted by Tysen Streib in a 2011
 forum post, who used it to develop an efficient Monte Carlo sampling
 method. The key insight is that assigning each player an
 $\mathrm{Exp}(S_j)$ random variable and sorting by realized value
@@ -152,13 +149,16 @@ perspective, proved in Theorem~\ref{thm:tree-correct}, appears to be new
 in this context.
 
 \paragraph{FFT libraries and automatic tuning.}
-FFTW~\citep{frigo2005} introduced the idea of empirical auto-tuning for
-FFT plans, generating machine-specific ``codelets'' at install time.
+All FFT-accelerated engines in this work build on the Cooley--Tukey
+algorithm~\citep{cooley1965}, which reduces the DFT from $\bigO(d^2)$ to
+$\bigO(d \log d)$. FFTW~\citep{frigo2005} introduced the idea of empirical
+auto-tuning for FFT plans, generating machine-specific ``codelets'' at
+install time.
 AMD's AOCL-FFTW extends this with 636 AVX-512-specific codelets (versus
 one in the upstream distribution), delivering 1.2--2$\times$ speedups at
 key sizes on Zen~4 architectures~\citep{aocl2024}. I use dual-library
-dispatch (AOCL-FFTW vs.\ Intel MKL, selected per-size by offline
-calibration) on x86-64. The broader philosophy of empirically-tuned
+dispatch (AOCL-FFTW vs.\ Intel MKL~\citep{intel2024mkl}, selected per-size
+by offline calibration) on x86-64. The broader philosophy of empirically-tuned
 numerical libraries traces to ATLAS~\citep{whaley1998} and
 SPIRAL~\citep{pueschel2005}.
 
@@ -166,7 +166,7 @@ SPIRAL~\citep{pueschel2005}.
 The roofline model of \citet{williams2009} bounds achievable performance
 by the minimum of peak compute and memory bandwidth, parameterized by
 arithmetic intensity. My dispatch cost model extends this idea to
-multi-level cache hierarchies using harmonic-mean bandwidth blending---a
+multi-level cache hierarchies using harmonic-mean bandwidth blending - a
 natural consequence of modeling total transfer time as the sum of
 time spent at each cache level.
 
@@ -183,17 +183,17 @@ the 40+ kernel launches in a single tree traversal.
 % ======================================================================
 
 This section derives the integral representation that is the foundation
-of the algorithm. All of the key ideas---the exponential clock, the
-generating function, and the one-dimensional integral---are presented
+of the algorithm. All of the key ideas - the exponential clock, the
+generating function, and the one-dimensional integral - are presented
 here, with supporting proofs where they provide insight.
 
 \subsection{The Malmuth--Harville Model and Exponential Clocks}
 
 \begin{definition}[Tournament instance]
-A \emph{tournament instance} is a tuple $(n, \bm{S}, \bm{\pi})$ where
-$n \in \mathbb{N}$ is the number of players, $\bm{S} = (S_1, \ldots, S_n)
+A \emph{tournament instance} is a tuple $(n, S, \pi)$ where
+$n \in \mathbb{N}$ is the number of players, $S = (S_1, \ldots, S_n)
 \in \mathbb{R}_{>0}^n$ is the vector of chip stacks with $S_i > 0$ for all
-$i$, and $\bm{\pi} = (\pi_1, \ldots, \pi_k) \in \mathbb{R}_{\geq 0}^k$
+$i$, and $\pi = (\pi_1, \ldots, \pi_k) \in \mathbb{R}_{\geq 0}^k$
 is the payout vector with $k \leq n$ and $\pi_1 \geq \pi_2 \geq \cdots
 \geq \pi_k \geq 0$.
 \end{definition}
@@ -213,7 +213,7 @@ unchanged stacks.
 The MH model has an equivalent continuous-time formulation that is central
 to my approach. Assign each player~$j$ an independent exponential random
 variable $T_j \sim \mathrm{Exp}(S_j)$ with density $S_j e^{-S_j t}$ for
-$t \geq 0$. Players are eliminated in order of increasing $T_j$---smallest
+$t \geq 0$. Players are eliminated in order of increasing $T_j$ - smallest
 $T_j$ is eliminated first, etc.
 
 Why does this reproduce the MH model? For any two players $i, j$, the
@@ -290,7 +290,7 @@ Multiplying by the payout $\pi_{r+1}$ and summing over positions:
 
 The inner sum $\Psi_i(v) = \sum_{r=0}^{k-1} \pi_{r+1} \cdot [x^r] Q_i(x; v)$
 is the dot product of the payout vector with the coefficient vector of
-$Q_i$---exactly the quantity the subproduct tree will compute efficiently.
+$Q_i$ - exactly the quantity the subproduct tree will compute efficiently.
 
 \subsection{Numerical Quadrature}
 
@@ -309,7 +309,7 @@ where $(v_q, w_q)_{q=1}^Q$ are the quadrature nodes and weights.
 This rule (which I call \emph{erfc-trap}) achieves exponential convergence:
 the error shrinks roughly as $e^{-cQ}$ for some $c > 0$ depending on the
 strip of analyticity of the integrand. With $Q = 256$, relative error is
-below $5 \times 10^{-12}$ on uniform stacks and below $1.5 \times
+below $5 \times 10^{-12}$ on uniform stacks and below $1.6 \times
 10^{-10}$ even at the $10^9$ stack-ratio bound (see
 Section~\ref{sec:accuracy} for a detailed comparison against
 tanh-sinh quadrature).
@@ -321,17 +321,18 @@ tanh-sinh quadrature).
 The quadrature rule reduces ICM computation to evaluating
 $\Psi_i(v_q) = \sum_{r=0}^{k-1} \pi_{r+1} \cdot [x^r] Q_i(x; v_q)$ for
 all $i = 1, \ldots, n$ at each of $Q$ quadrature points. Computing
-$Q_i(x; v_q) = \prod_{j \neq i} (a_j + b_j x)$ naively---one player at a
-time---would cost $\bigO(n^2 k)$ per quadrature point. This section
+$Q_i(x; v_q) = \prod_{j \neq i} (a_j + b_j x)$ naively - one player at a
+time - would cost $\bigO(n^2 k)$ per quadrature point. This section
 presents three engines that compute all $n$ leave-one-out products
 simultaneously, with cost-model-driven automatic dispatch.
 
 I will work throughout with truncated polynomials in the vector space
 $\mathbb{R}[x]_{<k} \cong \mathbb{R}^k$ of polynomials of degree $<k$,
 equipped with the Euclidean inner product
-$\ip{f}{g} = \sum_{m=0}^{k-1} f_m g_m$. The payout vector is reversed for
-indexing convenience: define $\tilde\pi_m = \pi_{n-m}$ for $m=0,\ldots,k-1$,
-so that $\Psi_i(v) = \ip{\tilde\pi}{Q_i}$.
+$\ip{f}{g} = \sum_{m=0}^{k-1} f_m g_m$. For 0-indexed access into this
+vector space, define $\tilde\pi_m = \pi_{m+1}$ for $m=0,\ldots,k-1$ ($\tilde\pi$
+is $\pi$ shifted to 0-based indexing, not reversed), so that
+$\Psi_i(v) = \ip{\tilde\pi}{Q_i}$.
 
 \subsection{Engine 1: Batched Linear Forward-Backward}\label{sec:linear}
 
@@ -342,7 +343,7 @@ a forward-backward decomposition. It is optimal when $k$ is small.
 \caption{Linear Forward-Backward}\label{alg:linear}
 \DontPrintSemicolon
 \SetAlgoLined
-\KwIn{$n$ players, values $a_1, \ldots, a_n$, reversed payout $\tilde\pi \in \mathbb{R}^k$}
+\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\tilde\pi \in \mathbb{R}^k$}
 \KwOut{$\Psi_1, \ldots, \Psi_n$}
 \BlankLine
 \tcp{Forward: prefix products}
@@ -375,12 +376,12 @@ the backward iteration over $m$ reads $R_m$ for the dot product before
 overwriting it.
 
 \paragraph{Batched quadrature and SIMD.}
-To exploit SIMD parallelism, I interleave $B_Q$ quadrature points in the
+To exploit SIMD parallelism, I interleave $B_Q = 8$ quadrature points in the
 data layout: $a_{\text{batch}}[j \cdot B_Q + q_i]$ stores the $q_i$-th
 quadrature value for player~$j$, ensuring sequential access in the inner
-loops. On Apple M3~Pro this maps to 4 NEON FMA ports
-($B_Q = 8$); on Zen~4 it maps to 512-bit AVX-512 FMA instructions
-($B_Q = 2$, since AVX-512 already processes 8 doubles per vector).
+loops. $B_Q = 8$ wins on all platforms: on Zen~4 it maps to one native
+512-bit AVX-512 vector per player, and on Apple M3~Pro it maps to two
+NEON FMA operations spread across 4 FMA ports.
 
 \paragraph{L2-aware checkpointing.}
 When $n \cdot k \cdot B_Q \cdot 8$ bytes exceeds L2 cache, the forward
@@ -413,7 +414,7 @@ children (truncated to degree $k$):
 \DontPrintSemicolon
 \SetAlgoLined
 \KwIn{Leaf polynomials $P^{(0)}_1, \ldots, P^{(0)}_n$,
-  reversed payout $\tilde\pi$, degree $k$}
+  0-indexed payout $\tilde\pi$, degree $k$}
 \KwOut{$\Psi_1, \ldots, \Psi_n$}
 \BlankLine
 \tcp{Build (bottom-up)}
@@ -427,9 +428,9 @@ children (truncated to degree $k$):
 $g^{(L-1)} \leftarrow \tilde\pi$\;
 \For{$\ell = L-1, L-2, \ldots, 1$}{
   \For{each node $i$ at level $\ell$ \textbf{in parallel}}{
-    $g^{(\ell-1)}_{2i} \leftarrow \corr(g^{(\ell)}_i,\; P^{(\ell-1)}_{2i+1})$
+    $g^{(\ell-1)}_{2i} \leftarrow g^{(\ell)}_i \star P^{(\ell-1)}_{2i+1}$
     \tcp*{Left child via right sibling}
-    $g^{(\ell-1)}_{2i+1} \leftarrow \corr(g^{(\ell)}_i,\; P^{(\ell-1)}_{2i})$
+    $g^{(\ell-1)}_{2i+1} \leftarrow g^{(\ell)}_i \star P^{(\ell-1)}_{2i}$
     \tcp*{Right child via left sibling}
   }
 }
@@ -442,21 +443,24 @@ The correctness of the tree engine follows from a single algebraic fact:
 the adjoint of truncated convolution is cross-correlation.
 
 \begin{definition}
-For $f, h \in \mathbb{R}[x]_{<k}$, truncated convolution is
-$(\mu_h(f))_m = \sum_{i+j=m} f_i h_j$. The cross-correlation is
-$(\corr(g, h))_j = \sum_{m=0}^{k-1-j} h_m g_{m+j}$.
+For $h \in \mathbb{R}[x]_{<k}$, let $T_h : \mathbb{R}[x]_{<k} \to
+\mathbb{R}[x]_{<k}$ denote truncated convolution by $h$:
+$T_h(f) = f * h$, i.e.\ $(T_h(f))_m = \sum_{i+j=m} f_i h_j$. Define
+cross-correlation by $f$ and $h$ as
+$(f \star h)_j = \sum_{m=0}^{k-1-j} h_m f_{m+j}$.
 \end{definition}
 
 \begin{lemma}[Correlation is the adjoint of convolution]\label{lem:adj-conv}
 For all $f, g, h \in \mathbb{R}[x]_{<k}$,
-$\ip{\mu_h(f)}{g} = \ip{f}{\corr(g, h)}$.
+$\ip{T_h(f)}{g} = \ip{f}{g \star h}$; equivalently, $T_h^{\ast} =
+{\cdot} \star h$.
 \end{lemma}
 \begin{proof}
-The map $\mu_h$ has a lower-triangular Toeplitz matrix representation
+$T_h$ has a lower-triangular Toeplitz matrix representation
 $M_{ij} = h_{i-j}$ (with $h_\ell = 0$ for $\ell < 0$ or $\ell \ge k$).
 Then $\ip{Mf}{g} = f^\top M^\top g = \ip{f}{M^\top g}$, and
 $(M^\top g)_i = \sum_{j=0}^{k-1} h_{j-i} g_j =
-\sum_{m=0}^{k-1-i} h_m g_{m+i} = (\corr(g, h))_i$.
+\sum_{m=0}^{k-1-i} h_m g_{m+i} = (g \star h)_i$.
 \end{proof}
 
 The build phase constructs the full product $R = P_1 * \cdots * P_n$ via a
@@ -468,9 +472,9 @@ The propagation phase computes $\ip{\tilde\pi}{Q_j}$ for all $j$ by
 applying the adjoint of the build phase's linear map, with $\tilde\pi$ as
 the seed. At each internal node, the build phase computes
 $(L, R) \mapsto L * R \bmod x^k$. Holding the sibling fixed and viewing
-this as a linear map in the descendant of interest, the adjoint is
-$g \mapsto \corr(g, \text{sibling})$---exactly what Algorithm~\ref{alg:tree}
-implements at each level.
+this as the linear map $T_{\text{sibling}}$ in the descendant of interest,
+the adjoint $T_{\text{sibling}}^{\ast}$ is $g \mapsto g \star \text{sibling}$
+- exactly what Algorithm~\ref{alg:tree} implements at each level.
 
 \begin{theorem}[Correctness of the tree engine]\label{thm:tree-correct}
 After Algorithm~\ref{alg:tree} completes, $g^{(0)}_j[0] = \Psi_j$ for all
@@ -482,44 +486,46 @@ $\mathrm{leaves}(i,\ell)$ be the leaf indices in the subtree rooted at node
 $i$ at level $\ell$, and let $C_j^{(\ell)}$ be the set of all leaves
 \emph{outside} this subtree. The invariant is:
 \begin{equation}\label{eq:invariant}
-  g^{(\ell)}_i = \corr\!\Bigl(\tilde\pi,\;
-    \prod_{j \in C_j^{(\ell)}} P_j \bmod x^k \Bigr).
+  g^{(\ell)}_i = \tilde\pi \star
+    \Bigl(\prod_{j \in C_j^{(\ell)}} P_j \bmod x^k \Bigr).
 \end{equation}
 
 \textbf{Base} ($\ell = L{-}1$, root): $C_j^{(L-1)} = \emptyset$, and
-$\corr(\tilde\pi, 1) = \tilde\pi = g^{(L-1)}$.
+$\tilde\pi \star 1 = \tilde\pi = g^{(L-1)}$.
 
 \textbf{Inductive step}: Assume the invariant holds at level $\ell$ for
 node $i$. The left child receives
-$g^{(\ell-1)}_{2i} = \corr(g^{(\ell)}_i, P^{(\ell-1)}_{2i+1})$. For any
+$g^{(\ell-1)}_{2i} = g^{(\ell)}_i \star P^{(\ell-1)}_{2i+1}$. For any
 test vector $f$:
 \begin{align*}
   \ip{f}{g^{(\ell-1)}_{2i}}
-  &= \ip{f}{\corr(\corr(\tilde\pi, R_C), P_{2i+1})} \\
-  &= \ip{f * P_{2i+1}}{\corr(\tilde\pi, R_C)}
+  &= \ip{f}{(\tilde\pi \star R_C) \star P_{2i+1}} \\
+  &= \ip{f * P_{2i+1}}{\tilde\pi \star R_C}
     \quad\text{(Lemma~\ref{lem:adj-conv})} \\
   &= \ip{(f * P_{2i+1}) * R_C}{\tilde\pi}
     \quad\text{(Lemma~\ref{lem:adj-conv})} \\
   &= \ip{f * (P_{2i+1} * R_C)}{\tilde\pi}
     \quad\text{(associativity)} \\
-  &= \ip{f}{\corr(\tilde\pi, P_{2i+1} * R_C)}
+  &= \ip{f}{\tilde\pi \star (P_{2i+1} * R_C)}
     \quad\text{(Lemma~\ref{lem:adj-conv})}.
 \end{align*}
 Since this holds for all $f$, the invariant holds for the left child with
 $C_j^{(\ell-1)} = C_j^{(\ell)} \cup \mathrm{leaves}(2i+1, \ell-1)$. The
 right child is symmetric. At level 0, $C_j^{(0)} = [n] \setminus \{j\}$,
-so $g^{(0)}_j = \corr(\tilde\pi, Q_j)$ and
+so $g^{(0)}_j = \tilde\pi \star Q_j$ and
 $g^{(0)}_j[0] = \ip{\tilde\pi}{Q_j} = \Psi_j$.
 \end{proof}
 
 \begin{remark}
 The propagation phase is an instance of reverse-mode automatic
-differentiation applied to the build phase~\citep{griewank2008}. The build
-computes $\Phi_L \circ \cdots \circ \Phi_1$, and propagation computes
-$\Phi_1^* \circ \cdots \circ \Phi_L^*$ applied to $\tilde\pi$. A standard
-result in reverse-mode AD states that the adjoint of a linear program has
-the same arithmetic complexity, giving complexity parity between build and
-propagation for free.
+differentiation applied to the build phase~\citep{griewank2008}. Writing
+$T_\ell$ for the convolution map $T_h$ of Lemma~\ref{lem:adj-conv}
+instantiated with $h$ equal to level $\ell$'s sibling polynomial, the
+build computes $T_L \circ \cdots \circ T_1$, and propagation computes
+$T_1^{\ast} \circ \cdots \circ T_L^{\ast}$ applied to $\tilde\pi$. A
+standard result in reverse-mode AD states that the adjoint of a linear
+program has the same arithmetic complexity, giving complexity parity
+between build and propagation for free.
 \end{remark}
 
 \paragraph{Per-level FFT and paired cached correlate.}
@@ -529,6 +535,26 @@ all 7-smooth numbers ($2^a 3^b 5^c 7^d$) to minimize total cost including
 wrap correction. During propagation, I share the forward FFT of the parent
 $g$-vector across both child correlates and cache child frequency-domain
 representations from the build phase, halving the FFT count at each level.
+
+This sharing is possible because correlation and convolution differ only
+by a conjugation in the frequency domain: for real-valued $f, h$, the
+discrete Fourier transform satisfies $\widehat{f \star h} = \hat f \cdot
+\overline{\hat h}$, whereas ordinary convolution satisfies $\widehat{f * h}
+= \hat f \cdot \hat h$ (no conjugate). Conjugating a transformed vector is
+$\bigO(\text{size})$ - an elementwise sign flip on the imaginary part - versus
+$\bigO(\text{size}\log\text{size})$ for a fresh transform. Two consequences
+follow directly. First, each child polynomial's forward FFT, already
+computed once during the build phase to convolve it with its sibling
+(Algorithm~\ref{alg:tree}, build step), needs only to be conjugated - not
+retransformed - to serve as that child's correlation kernel during
+propagation; this is the ``cached'' frequency-domain representation.
+Second, propagation at a node correlates the \emph{same} parent $g$-vector
+against both children's (cached, conjugated) spectra
+($g^{(\ell)}_i \star P^{(\ell-1)}_{2i+1}$ and
+$g^{(\ell)}_i \star P^{(\ell-1)}_{2i}$), so a single forward FFT of
+$g^{(\ell)}_i$ - the ``paired'' share - suffices for both child updates
+instead of transforming $g^{(\ell)}_i$ separately for each, halving the
+FFT count at this level relative to a naive implementation.
 
 \subsection{Engine 3: Hybrid Block-Divide}\label{sec:hybrid}
 
@@ -540,7 +566,7 @@ computation with the tree engine for inter-block structure.
 \caption{Hybrid Block-Divide}\label{alg:hybrid}
 \DontPrintSemicolon
 \SetAlgoLined
-\KwIn{$n$ players, values $a_1, \ldots, a_n$, reversed payout $\tilde\pi$, degree $k$, block size $B$}
+\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\tilde\pi$, degree $k$, block size $B$}
 \KwOut{$\Psi_1, \ldots, \Psi_n$}
 \BlankLine
 \tcp{Step 1: Build block products}
@@ -564,14 +590,61 @@ Propagate $\tilde\pi$ to obtain block-level $g$-vectors $g_b$\;
 \end{algorithm}
 
 \paragraph{Bidirectional division stability.}
-Synthetic division of $P_b(x)$ by $(a_j + (1-a_j)x)$ is numerically
-unstable when $a_j < 0.5$ (forward direction amplifies errors). I use
-bidirectional division: forward when $a_j > 0.5$, backward when
-$a_j \leq 0.5$, guaranteeing that the division coefficient satisfies
-$|c| < 1$ in all cases. This is safe because division operates on the
-\emph{complete} block product (not the truncated global product), where
-error amplification is bounded by $|c|^B$ and remains innocuous for
+Write the complete block product as $P_b(x) = \sum_{m=0}^{B} P_m x^m$ and
+the quotient to be recovered as $Q_j^{(b)}(x) = \sum_{m=0}^{B-1} Q_m x^m$,
+so that $P_b = (a_j + (1-a_j)x) \cdot Q_j^{(b)}$. Matching coefficients on
+both sides gives two exact recurrences for $Q$, depending on which
+direction the coefficients are read in:
+
+\emph{Forward} (increasing $m$): $Q_0 = P_0 / a_j$, and for
+$m = 1, \ldots, B-1$,
+\[
+  Q_m = \frac{P_m - (1-a_j)\,Q_{m-1}}{a_j}
+      = \frac{P_m}{a_j} - \frac{1-a_j}{a_j}\, Q_{m-1}.
+\]
+
+\emph{Backward} (decreasing $m$): $Q_{B-1} = P_B / (1-a_j)$, and for
+$m = B-2, \ldots, 0$,
+\[
+  Q_m = \frac{P_{m+1} - a_j\,Q_{m+1}}{1-a_j}
+      = \frac{P_{m+1}}{1-a_j} - \frac{a_j}{1-a_j}\, Q_{m+1}.
+\]
+
+Both compute the same exact quotient in exact arithmetic; they differ only
+in the coefficient $c$ multiplying the running term each step - forward's
+$c_{\text{fwd}} = -(1-a_j)/a_j$, backward's $c_{\text{bwd}} = -a_j/(1-a_j)$ -
+which governs how a rounding error at step $m$ is amplified by step $m+1$.
+
+\begin{lemma}[Stability of bidirectional division]\label{lem:division-stability}
+Choosing the forward recurrence when $a_j > 1/2$ and the backward
+recurrence when $a_j \le 1/2$ gives per-step error amplification
+$|c| \le 1$ for all $a_j \in (0,1)$, with $|c| < 1$ strictly except at the
+boundary $a_j = 1/2$.
+\end{lemma}
+\begin{proof}
+$|c_{\text{fwd}}| = (1-a_j)/a_j < 1 \iff a_j > 1/2$, and
+$|c_{\text{bwd}}| = a_j/(1-a_j) \le 1 \iff a_j \le 1/2$; the two conditions
+are exhaustive and disjoint except at $a_j = 1/2$ itself, where both give
+$|c| = 1$.
+\end{proof}
+
+This is safe because division operates on the \emph{complete} block product
+(not the truncated global product), where error amplification compounds as
+$|c|^B$ across the $B$ steps of the recurrence and remains innocuous for
 $B \leq 64$.
+
+\paragraph{Rejected CPU optimizations.} Several plausible optimizations
+were tried on the CPU engines and rejected after benchmarking. Karatsuba
+multiplication for the block build was 1.5$\times$ \emph{slower} at every
+block size tested: on FMA-capable hardware, schoolbook's
+\texttt{c[i+j] += a[i]*b[j]} is already one FMA per term, so Karatsuba's
+trade of multiplies for additions saves nothing - both cost one cycle.
+FFTW's NEON codelets for FP64 were 3.4$\times$ slower than Apple's vDSP on
+Apple Silicon, which is why vDSP is dispatched for FFT execution instead
+of FFTW at supported sizes on that platform (Section~\ref{sec:experiments});
+however, using vDSP directly inside the batched linear engine's inner
+loops (rather than only for FFT calls) was itself 2$\times$ \emph{slower},
+since per-call overhead at small $k$ exceeds any vectorization benefit.
 
 \subsection{Engine Dispatch: Roofline Cost Model}\label{sec:dispatch}
 
@@ -589,11 +662,12 @@ weighted by the fraction of data at each level:
 \begin{equation}\label{eq:harmonic}
   W_{\text{eff}} = \frac{B_{\text{total}}}{B_{\text{hit}}/W_{\text{hit}} +
     B_{\text{miss}}/W_{\text{miss}}}
-  = \frac{1}{\alpha / W_{\text{hit}} + (1-\alpha) / W_{\text{miss}}}.
+  = \frac{1}{\alpha / W_{\text{hit}} + (1-\alpha) / W_{\text{miss}}},
+  \qquad \alpha := B_{\text{hit}} / B_{\text{total}}.
 \end{equation}
 
-The model requires only independently measurable hardware constants---cache
-sizes and streaming bandwidths at each level---and produces dispatch
+The model requires only independently measurable hardware constants - cache
+sizes and streaming bandwidths at each level - and produces dispatch
 decisions directly from the physics of data movement. Validation against 44
 representative $(n, k)$ pairs on Zen~4 shows 42 correct dispatch decisions
 (95.5\%), with the two errors occurring where the engines are within
@@ -605,11 +679,20 @@ that accounts for block build cost, tree cost over $n/B$ leaves, and
 per-player divide cost. Typical selections are $B = 16$ on M3~Pro and
 $B = 32$ on Zen~4.
 
+\paragraph{Limitations of the cost model.} The 95.5\% dispatch accuracy
+above is not perfect, and the two misses are not an accident of the test
+set: they occur precisely where the linear and hybrid costs are close
+(3--9\%), which is exactly where a single-number cost estimate is least
+reliable. The harmonic-mean bandwidth blending in Equation~\ref{eq:harmonic}
+also assumes a working set cleanly split between two cache levels; M3~Pro's
+shared (rather than per-core) L2 architecture does not fit this assumption
+as cleanly as Zen~4's per-core L2/L3 split does (Section~\ref{sec:experiments}),
+so the model is better read as a calibrated practical heuristic than a
+first-principles guarantee.
+
 % ======================================================================
 \section{Theoretical Analysis}\label{sec:theory}
 % ======================================================================
-
-\subsection{Time Complexity}
 
 \begin{theorem}[Complexity of the tree engine]
 The tree engine (Algorithm~\ref{alg:tree}) computes all $n$ inner products
@@ -643,22 +726,12 @@ Inter-block tree over $n/B$ leaves: $\bigO((n/B) \log^2 k)$ by
 Theorem above. Within-block divide: $\bigO(B)$ per player = $\bigO(nB)$.
 \end{proof}
 
-\subsection{Numerical Stability}
-
-\begin{lemma}[Stability of bidirectional division]
-The bidirectional synthetic division in Algorithm~\ref{alg:hybrid} has
-per-step error amplification factor strictly less than $1$ for all
-$a_j \in (0, 1)$.
-\end{lemma}
-\begin{proof}
-Forward division: amplification $(1-a_j)/a_j < 1$ when $a_j > 1/2$.
-Backward division: amplification $a_j/(1-a_j) \leq 1$ when $a_j \le 1/2$.
-Choosing forward when $a_j > 1/2$ and backward otherwise ensures errors
-decay exponentially along the division chain.
-\end{proof}
+Numerical stability of the hybrid engine's within-block division is
+established separately, alongside the division recurrence itself, in
+Section~\ref{sec:hybrid} (Lemma~\ref{lem:division-stability}).
 
 % ======================================================================
-\section{Experimental Results}\label{sec:experiments}
+\section{CPU Experimental Results}\label{sec:experiments}
 % ======================================================================
 
 % All figures referenced below live in the sibling ICM repository:
@@ -666,10 +739,11 @@ decay exponentially along the division chain.
 
 \subsection{Experimental Setup}
 
-I evaluate the implementation on three platforms. All CPU experiments use
-$Q = 256$ quadrature points, uniform chip stacks, and report the median of
-5 repetitions. Correctness is verified against closed-form $V_1$ and $V_2$
-equities (see Appendix) and cross-checked between engines.
+I evaluate the CPU implementation on two platforms (GPU hardware and setup
+are described separately in Section~\ref{sec:gpu-results}). All experiments
+use $Q = 256$ quadrature points, uniform chip stacks, and report the median
+of 5 repetitions. Correctness is verified against closed-form $V_1$ and
+$V_2$ equities (see Appendix) and cross-checked between engines.
 
 \begin{itemize}
   \item \textbf{Apple M3~Pro:} 6 performance + 6 efficiency cores (12
@@ -680,9 +754,6 @@ equities (see Appendix) and cross-checked between engines.
     AVX-512 (8 FP64/vector), 2 FMA units per core, 1\,MB per-core L2,
     32\,MB shared L3. FFT: AOCL-FFTW (636 AVX-512 codelets) + Intel MKL
     dual dispatch via \texttt{dlopen}.
-  \item \textbf{NVIDIA B200 GPU:} sm\_100, ${\sim}$180\,GB HBM3e.
-    Implementation uses cuFFTDx fused device-side kernels with CUDA graph
-    capture. (See Section~\ref{sec:gpu}.)
 \end{itemize}
 
 \subsection{CPU Performance}
@@ -698,6 +769,7 @@ dispatch decisions made automatically by the roofline cost model.
 \caption{Single-threaded execution time (ms), $Q = 256$, uniform stacks.
   Best engine per cell: L = linear, H = hybrid.}
 \label{tab:serial}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{@{}l rrrrrr rrrrrr@{}}
 \toprule
 & \multicolumn{6}{c}{\textbf{Apple M3 Pro}} &
@@ -721,7 +793,8 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 65536 & 130(L)  & 453(L)  & 836(L)  & 6580(H) & 9710(H) & 10000(H)
       & 117(L)  & 244(L)  & 419(L)  & 3920(H) & 4170(H) & 4490(H) \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 \begin{table}[t]
@@ -729,6 +802,7 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 \caption{Parallel execution time (ms), $Q = 256$, uniform stacks.
   M3 Pro: 12 threads (6P+6E). Zen 4: 16 threads.}
 \label{tab:parallel}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{@{}l rrrrrr rrrrrr@{}}
 \toprule
 & \multicolumn{6}{c}{\textbf{Apple M3 Pro (12 threads)}} &
@@ -750,7 +824,8 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 65536 & 21.1  & 74.2  & 138   & 855   & 1270  & 1310
       & 19.5  & 30.7  & 45.2  & 431   & 530   & 631 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 \paragraph{Platform comparison.}
@@ -780,8 +855,8 @@ traversal operates on polynomials far exceeding L2 capacity, forcing all
 
 This asymmetry creates a sharp cliff at the linear-to-hybrid transition
 ($k \approx 300$--$500$ on Zen~4): the parallel linear engine at $k = 200$
-handles 609{,}453 players within one second, but the parallel hybrid engine
-at $k = 500$ handles only 187{,}531---a $3.3\times$ drop that reflects the
+handles 578{,}209 players within one second, but the parallel hybrid engine
+at $k = 500$ handles only 206{,}492 - a $2.8\times$ drop that reflects the
 bandwidth regime change, not an algorithmic deficiency.
 
 \begin{figure}[t]
@@ -809,15 +884,15 @@ bandwidth regime change, not an algorithmic deficiency.
   \includegraphics[width=0.48\textwidth]{../ICM/results/engine_dispatch_m3pro.png}
   \includegraphics[width=0.48\textwidth]{../ICM/results/engine_dispatch.png}
   \caption{Engine dispatch decisions at the one-second boundary.
-    Blue: linear engine. Orange: hybrid engine. Left: M3~Pro.
+    Purple: linear engine. Green: hybrid engine. Left: M3~Pro.
     Right: Zen~4.}
   \label{fig:dispatch}
 \end{figure}
 
 \subsection{Quadrature Accuracy}\label{sec:accuracy}
 
-The erfc-trap quadrature rule---trapezoidal rule after the change of
-variables $v = \Phi(y)$---achieves exponential convergence for smooth
+The erfc-trap quadrature rule - trapezoidal rule after the change of
+variables $v = \Phi(y)$ - achieves exponential convergence for smooth
 integrands~\citep{trefethen2014}. I compare it against tanh-sinh
 (double-exponential) quadrature~\citep{mori2001} across four stack
 distributions:
@@ -841,6 +916,7 @@ reports results for $n = 20$, the hardest case.
   Gauss = erfc-trap; TS = tanh-sinh. Machine epsilon (FP64) is
   $2.2 \times 10^{-16}$.}
 \label{tab:accuracy}
+\resizebox{\textwidth}{!}{%
 \begin{tabular}{@{}r c c c c c c c c@{}}
 \toprule
 & \multicolumn{2}{c}{Uniform} & \multicolumn{2}{c}{Adversarial}
@@ -857,7 +933,8 @@ $Q$ & Gauss & TS & Gauss & TS & Gauss & TS & Gauss & TS \\
 256  & $1.7{\times}10^{-12}$& $3.6{\times}10^{-14}$ & $5.0{\times}10^{-13}$& $1.4{\times}10^{-12}$& $5.0{\times}10^{-13}$& $1.5{\times}10^{-8}$ & $1.5{\times}10^{-10}$& $6.5{\times}10^{-6}$ \\
 512  & $1.9{\times}10^{-12}$& $2.5{\times}10^{-14}$ & $5.8{\times}10^{-13}$& $7.2{\times}10^{-13}$& $5.9{\times}10^{-13}$& $4.2{\times}10^{-11}$ & $4.9{\times}10^{-13}$& $5.9{\times}10^{-8}$ \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 Three findings emerge. First, erfc-trap converges to ${\sim}10^{-12}$
@@ -877,15 +954,27 @@ Third, this failure mode drove the choice of quadrature scheme. In the
 typical case, tanh-sinh is the better method. But a general-purpose ICM
 library must handle arbitrary stack distributions, including cases where
 one player holds $10^9$ times as many chips as another. Gaussian
-quadrature's uniform reliability---it keeps converging, predictably, all
-the way to the $10^9$ bound---was judged more valuable than better
+quadrature's uniform reliability - it keeps converging, predictably, all
+the way to the $10^9$ bound - was judged more valuable than better
 average-case precision.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.7\textwidth]{../ICM/results/accuracy_convergence.png}
+  \caption{Convergence of erfc-trap (Gauss-Legendre) quadrature toward
+    machine precision as $Q$ increases, across the four stack
+    distributions of Table~\ref{tab:accuracy}.}
+  \label{fig:accuracy}
+\end{figure}
 
 \subsection{Calibration Constants}
 
 Table~\ref{tab:constants} summarizes the hardware constants measured via
 offline profiling. All bandwidth values are from streaming benchmarks on
-the target hardware, not copied from vendor specifications.
+the target hardware, not copied from vendor specifications. $\tau_{\text{FMA}}$
+feeds the linear engine's $\bigO(nk)$ compute-bound cost estimate
+(Section~\ref{sec:linear}); $W_{L2}$, $W_{L3}$, and $W_{\text{DRAM}}$ feed
+the harmonic-mean bandwidth model of Equation~\ref{eq:harmonic}.
 
 \begin{table}[t]
 \centering
@@ -900,7 +989,7 @@ $W_{L2}$ (GB/s) & 112.9 & 118.9 & Measured L2 streaming BW \\
 $W_{L3}$ (GB/s) & 110.1 & 50.3  & Measured L3 streaming BW \\
 $W_{\text{DRAM}}$ (GB/s) & 109.2 & 26.5  & Measured DRAM streaming BW \\
 $L_2$ (bytes) & 1\,MB & 1\,MB  & Per-core L2 size \\
-$L_3$ (bytes) & --- & 32\,MB & Shared L3 size \\
+$L_3$ (bytes) &  -  & 32\,MB & Shared L3 size \\
 Typical $B$ & 16 & 32 & Cost-model block size \\
 FFT backend & FFTW+vDSP & AOCL+MKL & Library dispatch \\
 \bottomrule
@@ -958,7 +1047,7 @@ independent, map naturally to GPU execution.
 
 The tree's level-by-level structure becomes a sequence of batched kernel
 launches. At the bottom levels of a tree with $n = 1{,}572{,}864$ leaves
-and $Q = 256$, this yields millions of independent operations---far more
+and $Q = 256$, this yields millions of independent operations - far more
 than needed to saturate the GPU's streaming multiprocessors.
 
 \subsection{Three-Tier Kernel Dispatch}
@@ -976,8 +1065,8 @@ tiers based on polynomial degree:
     for the highest-throughput regime.
 \end{itemize}
 
-The entire multi-level execution sequence---spanning 40+ kernel launches
-across all three tiers---is captured into a single CUDA Graph and replayed
+The entire multi-level execution sequence - spanning 40+ kernel launches
+across all three tiers - is captured into a single CUDA Graph and replayed
 with ${\sim}2.5\,\mu$s total launch overhead.
 
 \subsection{Key Optimizations}
@@ -1011,61 +1100,77 @@ Two approaches were tested and rejected after benchmarking:
     more FMA operations and adds kernel launch barriers.
 \end{itemize}
 
-\subsection{GPU Results}
+% ======================================================================
+\section{GPU Experimental Results}\label{sec:gpu-results}
+% ======================================================================
+
+\textbf{Hardware.} NVIDIA B200, sm\_100, ${\sim}$180\,GB HBM3e. All
+experiments use $Q = 256$ quadrature points and cuFFTDx fused device-side
+kernels with CUDA graph capture (Section~\ref{sec:gpu}).
+
+Table~\ref{tab:gpu} reports a systematic $(n,k)$ grid sampled directly from
+the same 211-point calibration heatmap that generates
+Figure~\ref{fig:gpu-contour}, in the same row/column layout as
+Tables~\ref{tab:serial}--\ref{tab:parallel} so the CPU and GPU results are
+directly comparable. Table~\ref{tab:gpu-frontier} separately reports five
+extreme points from a dedicated max-$n$ binary search
+(\texttt{tools/push\_limit\_gpu.cu}) rather than the systematic grid - these
+are the specific $n$ values that pin down the 1-second and 626\,ms
+boundaries quoted below, and are not a subsample of Table~\ref{tab:gpu}.
 
 \begin{table}[t]
 \centering
-\caption{NVIDIA B200 GPU execution time (ms), $Q = 256$, FP64.}
+\caption{NVIDIA B200 GPU execution time (ms), $Q = 256$, FP64. Systematic
+  $(n,k)$ grid sampled from the calibration heatmap.}
 \label{tab:gpu}
+\begin{tabular}{@{}l rrrr@{}}
+\toprule
+$n$ & $k{=}64$ & $k{=}1024$ & $k{=}n/2$ & $k{=}n$ \\
+\midrule
+4{,}096       & 0.37  & 0.75   & 0.82    & 0.86 \\
+16{,}384      & 1.19  & 2.86   & 4.07    & 4.37 \\
+65{,}536      & 4.40  & 10.83  & 19.85   & 20.64 \\
+262{,}144     & 17.14 & 42.21  & 97.60   & 101.3 \\
+1{,}048{,}576 & 68.09 & 167.34 & 683.06  & 687.67 \\
+4{,}194{,}304 & 273.28& 873.28 & 2475.64 & 2500.45 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{NVIDIA B200 frontier probes (dedicated max-$n$ / max-field search,
+  not the systematic grid above).}
+\label{tab:gpu-frontier}
 \begin{tabular}{@{}rrr@{}}
 \toprule
 $n$ & $k$ & Time (ms) \\
 \midrule
-\multicolumn{3}{@{}l}{\emph{$k = n$ (all players paid)}} \\
-4{,}096    & $n$    & 1.08 \\
-8{,}192    & $n$    & 2.27 \\
-16{,}384   & $n$    & 4.99 \\
-65{,}536   & $n$    & 24.75 \\
-262{,}144  & $n$    & 117.9 \\
 1{,}441{,}792 & $n$ & 866 \\
 1{,}572{,}864 & $n$ & 1{,}148 \\
-\addlinespace
-\multicolumn{3}{@{}l}{\emph{$k = 100$ (large-field frontier)}} \\
-65{,}536      & 100 & 6.81 \\
-524{,}288     & 100 & 52.95 \\
-1{,}572{,}864 & 100 & 156.2 \\
 6{,}291{,}456 & 100 & 626.3 \\
 8{,}388{,}608 & 100 & 1{,}235 \\
-\addlinespace
-\multicolumn{3}{@{}l}{\emph{Small-$k$ scaling}} \\
 16{,}777{,}216 & 10 & 2{,}592 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-At $k = n$, the GPU computes all 262{,}144 player equities in 117.9\,ms.
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.6\textwidth]{../ICM/results/gpu_contour.png}\\[1em]
+  \includegraphics[width=0.75\textwidth]{../ICM/results/runtime_vs_n_gpu.png}
+  \caption{NVIDIA B200. Top: one-second contour (maximum $n$ achievable
+    within 1\,s as a function of $k$), the GPU analogue of
+    Figure~\ref{fig:contour}. Bottom: runtime vs.\ $n$ at fixed $k$,
+    showing the tree-level cliffs referenced below.}
+  \label{fig:gpu-contour}
+\end{figure}
+
+At $k = n$, the GPU computes all 262{,}144 player equities in 101.3\,ms.
 The under-one-second frontier for $k = n$ is $n = 1{,}441{,}792$ (866\,ms).
 At $k = 100$, it reaches $n = 6{,}291{,}456$ players in 626\,ms. The
 frontier is limited by VRAM at large $k$ and by tree-level cliffs at large
 $n$.
-
-\subsection{Limitations}
-
-Two issues were encountered on the B200 instance. First, at $n \ge
-1{,}048{,}576$ with $k = n$, the implementation runs out of memory because
-the VRAM budget calculation omits several per-quadrature-point
-allocations. A corrected budget calculation reduces the quadrature batch
-size from 240 to ${\sim}150$, bringing the arena allocation to
-${\sim}112$\,GB and resolving the OOM. Second, at $n = 524{,}288$ with
-$k = n$, cuFFT plan creation fails with \texttt{CUFFT\_INTERNAL\_ERROR}
-due to a 32-bit integer overflow in \texttt{cufftMakePlanMany}; switching
-to \texttt{cufftMakePlanMany64} (CUDA 11+) resolves this. Both fixes are
-available in the repository.
-
-A third, pre-existing off-by-one error in the hybrid engine's
-convolution-length computation (causing verify failures at $k = n$ for
-$n \ge 4{,}096$) was also identified and patched during this measurement
-cycle.
 
 % ======================================================================
 \section{Conclusion}\label{sec:conclusion}
@@ -1073,31 +1178,40 @@ cycle.
 
 I have presented a high-performance algorithm for computing ICM tournament
 equities using generating-function quadrature and FFT-accelerated
-subproduct trees. The algorithm achieves $\bigO(Qn\log^2 k)$ time, double-
-precision accuracy via $Q = 256$ quadrature points (relative error
+subproduct trees. The algorithm achieves $\bigO(Qn\log^2 k)$ time, double-precision accuracy via $Q = 256$ quadrature points (relative error
 ${<}\,5 \times 10^{-12}$ on typical inputs), and automatically dispatches
 between a linear engine (optimal for small $k$) and a hybrid block-tree
 engine (optimal for large $k$) using a calibrated roofline cost model.
 
-Three themes emerge from the implementation work. First, \emph{the adjoint
-is the algorithm}: the propagation phase is precisely the reverse-mode
-derivative of the build phase, and recognizing this yields both a clean
-correctness proof and complexity parity for free. Second, \emph{memory
-hierarchy dominates}: the roofline dispatch model, the L2-aware
-checkpointing, and the GPU's FFT-stride layout all demonstrate that data
-movement---not arithmetic---is the binding constraint. Third,
-\emph{calibration beats modeling}: per-size FFT timing, per-level cache
-bandwidths, and dual-library dispatch exploit the fact that measuring is
-cheaper and more accurate than predicting.
+The propagation phase is precisely the reverse-mode derivative of the
+build phase, and recognizing this gives both a clean correctness proof
+(Theorem~\ref{thm:tree-correct}) and complexity parity between build and
+propagation for free. The dominant cost throughout is data movement, not
+arithmetic: the roofline dispatch model, L2-aware checkpointing, and the
+GPU's FFT-stride layout all exist because moving data between cache levels
+is the binding constraint, not the FMA count. And the cost model and FFT
+dispatch decisions throughout - per-size FFT timing, per-level cache
+bandwidths, dual-library selection - are driven by direct calibration
+against measured hardware behavior rather than predicted from first-principles
+constants, because measuring turned out to be cheaper and more reliable
+than modeling it a priori.
 
-The GPU implementation on the NVIDIA B200 computes equities for 6.3 million
-players ($k = 100$) in 626\,ms, enabling ICM analysis at field sizes that
-were previously intractable.
+On the CPU, the batched linear and hybrid engines compute exact equities
+for up to 17,216 players in one second, single-threaded, on AMD Zen~4. A
+CUDA implementation for NVIDIA B200 extends this to roughly 1.5 million
+players in about a second, enabling ICM analysis at field sizes that were
+previously intractable.
 
-Future work includes extending the algorithm to non-uniform chip stack
-distributions with adaptive quadrature, and exploring real-time tournament
-decision support where subset equity queries can exploit the active-player
-masking already present in the implementation.
+Future work includes exploring real-time tournament decision support where
+subset equity queries can exploit the active-player masking already present
+in the implementation. A more speculative direction: since the propagation
+phase is already reverse-mode automatic differentiation of the build phase
+(Section~\ref{sec:tree}), and $a_j(v) = v^{S_j}$ is itself differentiable
+in $S_j$, extending this AD lens one step further - differentiating through
+the quadrature integral itself - would give exact gradients
+$\partial E_i / \partial S_j$ at the same $\bigO(Qn\log^2 k)$ cost as the
+equities themselves, potentially useful as a differentiable ICM node in
+gradient-based tournament-strategy training objectives.
 
 % ======================================================================
 % APPENDIX (optional, but useful for the mathematically inclined reader)
@@ -1107,25 +1221,55 @@ masking already present in the implementation.
 \section{Closed-Form Reference Equities}\label{sec:appendix}
 
 The library is validated against exact closed-form reference values for two
-special payout structures. These follow from linearity of expectation over
-pairs and triples of players, not from enumerating elimination orderings,
-and are exact for any $n$.
+special payout structures. Both follow from a single combinatorial identity
+applied at different orders, combined with linearity of expectation - not
+from enumerating elimination orderings - and are exact for any $n$.
 
-\paragraph{V1 (linear payout, $\pi_m = n - m$).}
-By linearity of expectation and the pairwise elimination probability
-$P(i \text{ beats } j) = S_i / (S_i + S_j)$:
+Write player $i$'s finishing position as $m = M + 1$, where $M$ is the
+(random) number of other players who finish ahead of $i$ ($M = 0$ is first
+place). For any $t \ge 0$, the number of ways to choose $t$ of the
+$n - 1 - M$ players who finish \emph{behind} $i$ satisfies, on every
+realized outcome,
+\begin{equation}\label{eq:combinatorial-identity}
+  \binom{n-1-M}{t} = \sum_{\substack{T \subseteq [n]\setminus\{i\} \\ |T| = t}}
+  \mathbf{1}[i \text{ finishes better than every player in } T],
+\end{equation}
+since this is exactly choosing $t$ of the $n-1-M$ players ranked below $i$ -
+no probability is involved yet, it is a counting identity on one outcome.
+Taking expectations and applying linearity term-by-term to the sum of
+indicators on the right (valid regardless of how the indicator events are
+correlated with each other):
+\begin{equation}\label{eq:combinatorial-expectation}
+  E\!\left[\binom{n-1-M}{t}\right] = \sum_{\substack{T \subseteq [n]\setminus\{i\} \\ |T|=t}}
+  \Pr[i \text{ beats every player in } T].
+\end{equation}
+``$i$ beats every player in $T$'' means $i$'s exponential clock is the
+smallest among $\{i\} \cup T$; by the same competing-exponentials argument
+as Section~\ref{sec:derivation} (the minimum of independent
+$\mathrm{Exp}(S_j)$ variables is itself exponential with rate equal to the
+sum of the rates), $\Pr[i \text{ beats every player in } T] = S_i /
+(S_i + \sum_{j \in T} S_j)$.
+
+\paragraph{V1 (linear payout, $\pi_m = n - m + 1$).} Since $n - M =
+\binom{n-1-M}{0} + \binom{n-1-M}{1}$, apply Equation~\ref{eq:combinatorial-expectation}
+at $t=0$ (trivially $1$, the empty subset $T = \emptyset$) and $t=1$ (one
+term per opponent $j$, $T = \{j\}$):
 \[
-  E_i = 1 + \sum_{j \neq i} \frac{S_i}{S_i + S_j}.
+  E_i = E[n - M] = E\!\left[\binom{n-1-M}{0}\right] + E\!\left[\binom{n-1-M}{1}\right]
+      = 1 + \sum_{j \neq i} \frac{S_i}{S_i + S_j}.
 \]
 
-\paragraph{V2 (quadratic payout, $\pi_m = \binom{n-1-m}{2}$).}
-By linearity of expectation and the three-player elimination probability
-$P(i \text{ beats both } j, k) = S_i / (S_i + S_j + S_k)$:
+\paragraph{V2 (quadratic payout, $\pi_m = \binom{n-m}{2}$).} Since
+$\pi_m = \binom{n-m}{2} = \binom{n-1-M}{2}$ directly, apply
+Equation~\ref{eq:combinatorial-expectation} at $t=2$ (one term per opponent
+pair $T = \{j,k\}$):
 \[
-  E_i = \sum_{j < k,\, j,k \neq i} \frac{S_i}{S_i + S_j + S_k}.
+  E_i = E\!\left[\binom{n-1-M}{2}\right] = \sum_{j < k,\, j,k \neq i} \frac{S_i}{S_i + S_j + S_k}.
 \]
 
-Both are implemented as \texttt{icm\_v1\_exact()} and
+Higher payout schedules follow the same pattern for larger $t$; V1 and V2
+are the $t \le 2$ cases used here as exact, closed-form, arbitrary-$n$
+ground truth. Both are implemented as \texttt{icm\_v1\_exact()} and
 \texttt{icm\_v2\_exact()} in the reference library and used to validate the
 quadrature-based implementation across all stack distributions.
 
