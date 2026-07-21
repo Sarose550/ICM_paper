@@ -541,8 +541,8 @@ by a conjugation in the frequency domain: for real-valued $f, h$, the
 discrete Fourier transform satisfies $\widehat{f \star h} = \hat f \cdot
 \overline{\hat h}$, whereas ordinary convolution satisfies $\widehat{f * h}
 = \hat f \cdot \hat h$ (no conjugate). Conjugating a transformed vector is
-$\bigO(\text{size})$ - an elementwise sign flip on the imaginary part - versus
-$\bigO(\text{size}\log\text{size})$ for a fresh transform. Two consequences
+$\bigO(d)$ - an elementwise sign flip on the imaginary part - versus
+$\bigO(d\log d)$ for a fresh transform. Two consequences
 follow directly. First, each child polynomial's forward FFT, already
 computed once during the build phase to convolve it with its sibling
 (Algorithm~\ref{alg:tree}, build step), needs only to be conjugated - not
@@ -887,6 +887,16 @@ bandwidth regime change, not an algorithmic deficiency.
     Purple: linear engine. Green: hybrid engine. Left: M3~Pro.
     Right: Zen~4.}
   \label{fig:dispatch}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.48\textwidth]{../ICM/results/runtime_vs_n_cpu_m3pro.png}
+  \includegraphics[width=0.48\textwidth]{../ICM/results/runtime_vs_n_cpu.png}
+  \caption{Runtime vs.\ $n$ at fixed $k$, single-threaded. Left: Apple
+    M3~Pro. Right: AMD Zen~4. The CPU analogue of the GPU runtime plot in
+    Figure~\ref{fig:gpu-contour}.}
+  \label{fig:runtime-cpu}
 \end{figure}
 
 \subsection{Quadrature Accuracy}\label{sec:accuracy}
