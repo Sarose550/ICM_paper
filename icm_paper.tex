@@ -1049,6 +1049,125 @@ Note: M3~Pro's shared L2 architecture (16--36\,MB total, configuration-dependent
 fit neatly into the per-core L2/L3 model, so only the 1\,MB performance-core L2 is listed.
 The bandwidth values reflect measured streaming throughput at the respective cache levels.
 
+\subsection{Calibration Methodology: Direct Measurement vs.\ Indirect Regression}\label{sec:calib-methodology}
+
+The dispatch cost model (Section~\ref{sec:dispatch}) depends on hardware
+constants --- $\tau_{\text{FMA}}$, cache bandwidths, per-size FFT costs,
+and several micro-architectural parameters --- that are fit to timing data
+by nonlinear least squares. Two of these constants proved structurally
+unrecoverable from aggregate plan-timing data alone, leading to a
+methodological shift from indirect regression to isolated direct
+microbenchmarking. This section describes the failure mode, the fix, and
+the precedent it follows.
+
+\paragraph{Precedent: direct measurement over indirect inference.}
+The principle of measuring a parameter directly rather than backing it out
+of aggregate data has strong precedent in high-performance computing.
+FFTW's \texttt{PATIENT}-mode planner measures the actual execution time of
+candidate FFT plans directly rather than relying on an indirect cost
+model~\citep{frigo2005}. The ATLAS project's AEOS (Automated Empirical
+Optimization of Software) system empirically times generated kernel
+variants per architecture to select the fastest~\citep{whaley1998}. The
+roofline model measures peak FLOP/s and memory bandwidth via dedicated
+streaming microbenchmarks rather than inferring them from application
+runs~\citep{williams2009}. In each case, the rationale is the same: when a
+parameter's contribution to the total observed cost is small relative to
+other, larger effects, an indirect regression lacks the signal to identify
+it reliably.
+
+\paragraph{Persistency of excitation.}
+This failure mode has a formal name in control theory and system
+identification: \emph{persistency of excitation}~\citep{ljung1999}. A
+parameter is identifiable from training data only if the input signal
+varies its effect enough to be distinguishable from noise and from the
+effects of other parameters. When one parameter's contribution never
+exceeds a few percent of any training example's total cost (as is the case
+for wrap-correction cost in the tree engine --- see below), the regression
+objective is effectively flat with respect to that parameter: wildly
+different values produce nearly identical aggregate predictions, and the
+fitted value reflects optimizer drift rather than physical reality.
+
+\paragraph{The wrap-correction identifiability failure.}
+The tree engine's wrap correction (Algorithm~\ref{alg:tree}) corrects
+aliasing wraparound when truncated polynomial multiplication is performed
+via FFT with a transform size smaller than the full linear convolution
+length. The cost of this correction, parameterized by
+$\texttt{WRAP\_FMA\_NS}$ (nanoseconds per fused multiply-add in the
+correction loop), is a small fraction of any sampled plan's total
+predicted time. On AMD Zen~4, only 5 of 200 sampled plans had
+wrap-correction cost exceeding 1\% of that plan's total predicted time
+(maximum 1.5\%). The nonlinear least-squares fit's objective was flat
+across a factor of 4 in $\texttt{WRAP\_FMA\_NS}$ ($\Delta < 0.001$ in
+the objective), making the constant unidentifiable from aggregate data.
+
+The fix was to measure $\texttt{WRAP\_FMA\_NS}$ directly: an isolated
+microbenchmark (\texttt{tools/bench\_wrap\_fma.c}) that executes only the
+wrap-correction inner loop (a verbatim copy of the production code in
+\texttt{src/icm.c}), sweeping the wrap range over $[4, 2048]$ across three
+polynomial-size regimes (2K, 8K, 32K elements) so that the correction
+dominates the measured time by construction ($R^2 = 0.9998$). The result,
+displayed in Figure~\ref{fig:wrap-curve}, is not a single constant but a
+genuine cache-hierarchy-transition curve: the marginal cost rises smoothly
+from ${\sim}0.26$\,ns/FMA at small wrap ranges (L1/L2-resident,
+near-FMA-throughput-bound) to ${\sim}0.53$\,ns/FMA at large wrap ranges
+(memory-latency-bound as the working set exceeds cache capacity). At the
+decision-relevant operating range ($\texttt{wrap\_m} \approx 64$--$384$,
+matching tree levels~7--9 for typical $(n,k)$ pairs), the local slope is
+${\sim}0.36$--$0.45$\,ns/FMA.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.65\textwidth]{../ICM/results/wrap_fma_cost_curve.png}
+  \caption{Measured marginal cost of the wrap-correction FMA loop as a
+    function of wrap range, for the SMALL\_2048 polynomial-size regime
+    (Zen~4). The curvature reflects a real cache-hierarchy transition:
+    L1/L2-resident at small $\texttt{wrap\_m}$ (${\sim}0.26$\,ns/FMA),
+    transitioning to memory-latency-bound at large $\texttt{wrap\_m}$
+    (${\sim}0.53$\,ns/FMA). The production value
+    $\texttt{WRAP\_FMA\_NS} = 0.40$ (dashed line) is a representative
+    point estimate from the least-squares slope over the
+    $\texttt{wrap\_m} \in [64, 384]$ operating window.}
+  \label{fig:wrap-curve}
+\end{figure}
+
+\paragraph{Disclosure: point-estimate approximation.}
+The shipped $\texttt{WRAP\_FMA\_NS}$ values --- $0.40$ on Zen~4 and
+$0.4942$ on Apple M3~Pro --- are representative point estimates from a
+hand-chosen operating-range window ($\texttt{wrap\_m} \in [64, 384]$),
+not a fully piecewise or continuous model of the cache-hierarchy
+transition visible in Figure~\ref{fig:wrap-curve}. The dispatch model
+treats wrap correction as having a single constant marginal cost; a more
+accurate model would account for the dependence on working-set size, but
+the single-constant approximation has proved sufficient in practice
+(dispatch accuracy 42/44 on Zen~4, Section~\ref{sec:dispatch}).
+
+\paragraph{M3 Pro: a second identifiability failure.}
+The same methodology was applied to $\texttt{FP64\_DIV\_NS}$ on the Apple
+M3~Pro after the indirect fit converged to a physically implausible value
+(0.5\,ns, at its imposed lower bound --- FP64 division latency on Apple
+Silicon is expected to be 13--16 cycles, or ${\sim}3.2$--$4.0$\,ns at
+4.05\,GHz). A second dedicated microbenchmark
+(\texttt{tools/bench\_div\_chain.c}) measured the dependency-chained
+division cost directly (matching the actual usage in the hybrid engine's
+leaf-extraction synthetic-division recurrence, Section~\ref{sec:hybrid}),
+yielding $3.4890$\,ns.
+
+\paragraph{Collinearity caveat (disclosed, not hidden).}
+Pinning both $\texttt{WRAP\_FMA\_NS}$ and $\texttt{FP64\_DIV\_NS}$ to
+their directly-measured values on M3~Pro raised the aggregate fit's RMS
+log-relative error from 6.57\% to 10.2\% and pushed
+$\texttt{FFT\_OVERHEAD\_NS}$ to a physically odd 631\,ns (and
+$\tau_{\text{FMA}}$ to its fit lower bound) to compensate. The current
+\texttt{sample\_plans} training data does not cleanly separate the
+division constant's effect from the schoolbook-multiplication constant's
+on this hardware --- a collinearity limitation in the training dataset,
+not a correctness issue. The dispatch decisions remain sound:
+\texttt{bench\_grid verify} passes all tests and
+\texttt{bench\_grid crossover} shows a clean, monotonic linear-to-hybrid
+transition at $k \approx 250$--$260$. Improving the
+\texttt{sample\_plans} coverage to break this collinearity is open
+follow-up work.
+
 \subsection{Subset Equity Pruning}\label{sec:subset}
 
 The hybrid engine supports a subset-query mode that computes equities for
