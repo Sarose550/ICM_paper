@@ -755,9 +755,7 @@ $\bigO(nB + n\log^2 k)$ operations per quadrature point.
 Block build: $n/B$ blocks at $\bigO(B^2)$ each = $\bigO(nB)$.
 Within-block divide: $\bigO(B)$ per player = $\bigO(nB)$.
 
-For the inter-block tree, assume $B$ and $k$ are powers of two with
-$B \mid n$ (the general case differs only by floor effects that do not
-change the asymptotic order). Let $m = n/B$ leaves, each a degree-$B$
+For the inter-block tree, let $m = n/B$ leaves, each a degree-$B$
 polynomial. The tree has $\log_2 m$ merge levels above the leaves.
 Define the \emph{saturation level} $s = \log_2(k/B)$: this is the number
 of levels where subtree degree remains below $k$, i.e.\ $B \cdot 2^\ell
