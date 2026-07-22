@@ -747,7 +747,7 @@ In both cases, $T_b(n) = \bigO(n \log^2 k)$. Propagation has the same
 complexity by adjoint parity (Remark after Theorem~\ref{thm:tree-correct}).
 \end{proof}
 
-\begin{theorem}[Complexity of the hybrid engine]
+\begin{theorem}[Complexity of the hybrid engine]\label{thm:hybrid-complexity}
 The hybrid engine with block size $B$ computes all $n$ inner products in
 $\bigO(nB + (n/B)\log^2 k)$ operations per quadrature point.
 \end{theorem}
@@ -756,6 +756,35 @@ Block build: $n/B$ blocks at $\bigO(B^2)$ each = $\bigO(nB)$.
 Inter-block tree over $n/B$ leaves: $\bigO((n/B) \log^2 k)$ by
 Theorem above. Within-block divide: $\bigO(B)$ per player = $\bigO(nB)$.
 \end{proof}
+
+\begin{corollary}[Optimal block size is $\Theta(\log k)$]\label{cor:optimal-B}
+Choosing $B = \Theta(\log k)$ in Theorem~\ref{thm:hybrid-complexity} gives
+complexity $\bigO(n \log k)$ per quadrature point --- strictly better than
+the pure tree engine's $\bigO(n \log^2 k)$.
+\end{corollary}
+\begin{proof}
+By AM-GM, for $B > 0$,
+\[
+  nB + \frac{n \log^2 k}{B} \;\ge\; 2\sqrt{nB \cdot \frac{n\log^2 k}{B}}
+  \;=\; 2n\log k,
+\]
+with equality iff $nB = n\log^2 k / B$, i.e.\ $B = \log k$.
+\end{proof}
+
+\paragraph{Theory versus practice.} Corollary~\ref{cor:optimal-B} is an
+asymptotic statement, not a practical dispatch rule: over the $k$ range
+this implementation actually targets (roughly $10^2$--$10^5$),
+$\log_2 k$ spans only about 7--17 --- a narrow range easily dominated by
+hardware constant factors (cache-line size, SIMD width, memory latency)
+that Theorem~\ref{thm:hybrid-complexity}'s big-$\bigO$ hides. This is
+exactly what the empirical block-size sweep (Section~\ref{sec:experiments})
+finds: the wall-clock-optimal $B$ on Zen~4 is a hardware constant ($B=32$)
+across the entire tested $(n,k)$ grid, not a quantity that grows with $k$
+as the asymptotic optimum would suggest. The two results are not in
+tension --- $\Theta(\log k)$ growing slowly enough to be swamped by
+constant factors over any range of $k$ that fits in memory is precisely
+why a fixed, hardware-tuned $B$ is the right engineering choice, even
+though it is not the asymptotically optimal one.
 
 Numerical stability of the hybrid engine's within-block division is
 established separately, alongside the division recurrence itself, in
