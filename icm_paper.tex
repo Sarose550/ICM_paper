@@ -754,74 +754,109 @@ $\bigO(nB + n\log^2 k)$ operations per quadrature point.
 \begin{proof}
 Block build: $n/B$ blocks at $\bigO(B^2)$ each = $\bigO(nB)$.
 Within-block divide: $\bigO(B)$ per player = $\bigO(nB)$.
-For the inter-block tree: $m = n/B$ leaves, each a degree-$B$ polynomial,
-combined via a binary subproduct tree capped at degree $k$. The saturation
-level is $s = \lfloor\log_2(k/B)\rfloor$ (the largest $\ell$ with
-$B \cdot 2^\ell \le k$).
 
-\noindent\textit{Below saturation} ($\ell = 1,\ldots,s$): degree grows as
-$B \cdot 2^\ell < k$. There are $m/2^\ell$ nodes per level, each merging
-at cost $\bigO(B \cdot 2^\ell \log(B \cdot 2^\ell))$. Per-level cost is
-$(m/2^\ell) \cdot \bigO(B \cdot 2^\ell \log(B \cdot 2^\ell))
-= \bigO(n \log(B \cdot 2^\ell))$. Summing $\ell = 1,\ldots,s$ gives
-$\bigO(n \log^2(k/B)) = \bigO(n \log^2 k)$.
+For the inter-block tree, let $m = n/B$ leaves, each a degree-$B$
+polynomial. The tree has $\log_2 m$ merge levels above the leaves.
+Define the \emph{saturation level} $s = \log_2(k/B)$: this is the number
+of levels where subtree degree remains below $k$, i.e.\ $B \cdot 2^\ell
+< k$ for $\ell \le s$ and capped at~$k$ thereafter.
 
-\noindent\textit{At and above saturation} ($\ell > s$): all nodes are
-capped at degree $k$, each merge costs $\bigO(k \log k)$. The remaining
-$\bigO(\log m)$ levels contribute
-$\sum_{\ell>s} (m/2^\ell) \cdot \bigO(k \log k)
-= m \cdot \bigO((B/k) \cdot k \log k) = \bigO(n \log k)$.
+\noindent\textit{Below saturation} ($\ell = 1,\ldots,s$). There are
+$m/2^\ell$ nodes at level~$\ell$, each merging two degree-$(B \cdot
+2^{\ell-1})$ polynomials into one of degree $B \cdot 2^\ell$, costing
+$B \cdot 2^\ell \log_2(B \cdot 2^\ell)$ per merge. Per-level cost:
+$(m/2^\ell) \cdot B \cdot 2^\ell \log_2(B \cdot 2^\ell)
+= n \log_2(B \cdot 2^\ell)$. Summing over $\ell$:
+\[
+  C_{\text{below}} = n\sum_{\ell=1}^{s} \log_2(B \cdot 2^\ell)
+  = n\sum_{\ell=1}^{s} (\log_2 B + \ell)
+  = n\Bigl(s\log_2 B + \frac{s(s+1)}{2}\Bigr).
+\]
+Since $s = \log_2 k - \log_2 B$, the sum telescopes:
+\begin{align*}
+  s\log_2 B + \frac{s(s+1)}{2}
+  &= \frac{s}{2}\bigl(2\log_2 B + s + 1\bigr) \\
+  &= \frac{s}{2}\bigl(\log_2 B + (\log_2 B + s) + 1\bigr) \\
+  &= \frac{s}{2}\bigl(\log_2 B + \log_2 k + 1\bigr)
+   = \frac{s}{2}\log_2(2kB).
+\end{align*}
+Thus $C_{\text{below}} = \frac{n}{2}\,s\,\log_2(2kB)$.
 
-Total tree cost: $\bigO(n \log^2 k + n \log k) = \bigO(n \log^2 k)$.
+\noindent\textit{At and above saturation} ($\ell = s{+}1,\ldots,\log_2 m$).
+All merges cost $k\log_2 k$ each. The number of nodes across these levels
+is a geometric series:
+\[
+  \sum_{\ell=s+1}^{\log_2 m} \frac{m}{2^\ell}
+  = m\bigl(2^{-s} - 2^{-\log_2 m}\bigr)
+  = \frac{n}{B}\Bigl(\frac{B}{k} - \frac{B}{n}\Bigr)
+  = \frac{n}{k} - 1.
+\]
+Hence $C_{\text{above}} = (n/k - 1) \cdot k\log_2 k = (n - k)\log_2 k$.
+
+Total tree cost:
+\begin{equation}\label{eq:tree-cost-exact}
+  C_{\text{tree}}(n,B,k)
+  = \frac{n}{2}\,\log_2\!\Bigl(\frac{k}{B}\Bigr)\,
+    \log_2(2kB) \;+\; (n - k)\log_2 k.
+\end{equation}
+
+At $B = k$ we have $s = 0$ and the first term vanishes, leaving
+$C_{\text{tree}} = (n-k)\log_2 k$, which is exactly the ``all-saturated''
+cost of a tree whose leaves already meet the degree cap. At $B = 1$
+we have $s = \log_2 k$, giving
+$C_{\text{tree}} = \frac{n}{2}\log_2 k \cdot \log_2(2k) + (n-k)\log_2 k
+= \frac{n}{2}\log_2^2 k + O(n\log k)$.
+For any $B \le k$, Equation~\ref{eq:tree-cost-exact} is
+$\Theta(n\log^2 k)$: the first term is $\Theta(n\log^2(k/B))$ and the
+second is $\Theta(n\log k)$; together they are $\Theta(n\log^2 k)$
+because $\log(k/B) \le \log k$.
 \end{proof}
 
-\begin{corollary}[Blocking is a constant-factor optimization]\label{cor:blocking-constant}
-The tree-phase cost is $\Theta(n(\log^2 k - \log^2 B))$, which is
-$\Theta(n\log^2 k)$ for any $B = o(k)$; the $\log^2 B$ term is a
-lower-order correction when $B \ll k$. Consequently, blocking provides at
-most a constant-factor improvement over the pure tree engine --- there is
-no asymptotic complexity class separation between $B=1$ and any $B>1$.
+\begin{corollary}[Blocking does not improve the asymptotic order]\label{cor:blocking-constant}
+The total hybrid cost $T(B) = nB + C_{\text{tree}}(n,B,k)$ is minimized
+at $B = \Theta(1)$, and increasing $B$ beyond a small constant strictly
+increases the total.
 \end{corollary}
 \begin{proof}
-From the level-by-level sum in Theorem~\ref{thm:hybrid-complexity}, the
-exact constant-factor form (using the FFT cost model $d\log d$ per merge
-of degree $d$) is:
-\[
-  C_{\text{tree}}(n,B,k) = \frac{n}{2}\bigl(\log^2 k - \log^2 B
-    + 3\log k - \log B\bigr) + o(n\log^2 k).
-\]
-For $B = \Theta(1)$, $\log^2 B$ is constant and the leading term is
-$\frac{n}{2}\log^2 k$. For any $B = o(k)$, the $\log^2 k$ term dominates
-$\log^2 B$ asymptotically. Thus $C_{\text{tree}} = \Theta(n\log^2 k)$
-independent of $B$ (up to the constant hidden by $\Theta$).
+With Equation~\ref{eq:tree-cost-exact} and $s = \log_2(k/B)$,
+the change when doubling $B$ is
+$\Delta T = T(2B) - T(B) = n(2B - B) + \frac{n}{2}\bigl[(s-1)\log_2(4kB)
+- s\log_2(2kB)\bigr]$.  Substituting $\log_2(4kB) = \log_2(2kB) + 1$ and
+simplifying:
+\begin{align*}
+  \Delta T &= nB + \frac{n}{2}\bigl[(s-1)(\log_2(2kB) + 1)
+              - s\log_2(2kB)\bigr] \\
+           &= nB + \frac{n}{2}\bigl[s - \log_2(2kB) - 1\bigr] \\
+           &= nB + \frac{n}{2}\bigl[(\log_2 k - \log_2 B)
+              - (\log_2 k + \log_2 B + 1) - 1\bigr] \\
+           &= nB - n(\log_2 B + 1)
+            = n\bigl(B - \log_2 B - 1\bigr).
+\end{align*}
+For $B = 1$: $\Delta T = n(1 - 0 - 1) = 0$, so $T(2) = T(1)$.
+For $B = 2$: $\Delta T = n(2 - 1 - 1) = 0$, so $T(4) = T(2)$.
+For $B \ge 4$: $f(B) = B - \log_2 B - 1$ has derivative
+$f'(B) = 1 - 1/(B\ln 2) > 0$ for $B > 1/\ln 2 \approx 1.44$, and
+$f(4) = 4 - 2 - 1 = 1 > 0$.  Hence $\Delta T > 0$ for all $B \ge 4$,
+and $T(B)$ is strictly increasing on $B \in \{4,8,16,\ldots\}$.
+
+Thus $T(1) = T(2) = T(4) < T(8) < T(16) < \cdots$, and the minimum is
+attained at $B \in \{1,2,4\}$.  In particular, $B = \Theta(1)$.
 \end{proof}
 
-\paragraph{Why the earlier substitution $n \to n/B$ was incorrect.}
-Theorem~5.1's proof partitions a tree of $n$ degree-1 leaves into $n/k$
-below-saturation subtrees of $k$ leaves each (Case~1, costing
-$\bigO(k\log^2 k)$ per subtree). Substituting $n \to n/B$ leaf
-\emph{count} alone implicitly assumes the new leaves still have degree~1,
-which they do not. With degree-$B$ leaves, the saturation boundary is
-reached after $\log_2(k/B)$ levels (not $\log_2 k$), and each
-below-saturation subtree has $k/B$ leaves \emph{of degree~$B$} --- the
-$B$ factors cancel in the product $(n/k) \cdot \bigO(k\log^2 k)$, leaving
-the tree cost $\Theta(n\log^2 k - n\log^2 B)$, which is
-\emph{independent of $B$ at leading order} rather than proportional to
-$1/B$.
-
-\paragraph{Theory versus practice.} Corollary~\ref{cor:blocking-constant}
-shows that blocking is an engineering (constant-factor) optimization, not
-an asymptotic one: the tree phase costs $\Theta(n\log^2 k)$ regardless of
-$B$, and the block build/divide add $\bigO(nB)$ overhead. The optimal $B$
-is therefore determined by hardware constants (cache-line size, SIMD
-width, division latency) rather than by $n$ or $k$. This is exactly what
-the empirical block-size sweep (Section~\ref{sec:experiments}) finds: the
+\paragraph{Theory versus practice.}
+Corollary~\ref{cor:blocking-constant} shows that blocking provides no
+asymptotic speedup: the tree phase is $\Theta(n\log^2 k)$ regardless of
+$B$, and the $nB$ block-build term grows faster than the tree-phase
+savings for any $B \ge 4$.  The optimal $B$ is therefore determined
+entirely by hardware constant factors --- cache-line width, SIMD lane
+count, division latency --- not by $n$ or $k$.  This is exactly what the
+empirical block-size sweep finds (Section~\ref{sec:experiments}): the
 wall-clock-optimal $B$ on Zen~4 is $B = 32$, constant across the entire
-tested $(n,k)$ grid. If blocking provided an asymptotic
-$\Theta(\log k)$ benefit as an earlier (incorrect) reduction suggested,
-the optimal $B$ would grow detectably with $k$ over the measured range
-$k \in [10^2, 10^5]$ --- the fact that it does not is an independent
-empirical confirmation of Corollary~\ref{cor:blocking-constant}.
+tested $(n,k)$ grid, with no detectable dependence on $k$ over the range
+$k \in [10^2, 10^5]$.  Had blocking provided a $\Theta(\log k)$
+asymptotic benefit, the optimal $B$ would grow with $k$; the fact that it
+does not is an independent experimental confirmation of
+Corollary~\ref{cor:blocking-constant}.
 
 Numerical stability of the hybrid engine's within-block division is
 established separately, alongside the division recurrence itself, in
