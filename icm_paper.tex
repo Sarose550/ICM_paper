@@ -6,7 +6,7 @@
 \usepackage{booktabs}
 \usepackage{natbib}
 \usepackage[margin=1in]{geometry}
-\usepackage{microtype}
+\usepackage[expansion=false]{microtype}
 \usepackage{graphicx}
 \usepackage[section]{placeins}
 
@@ -154,13 +154,15 @@ algorithm~\citep{cooley1965}, which reduces the DFT from $\bigO(d^2)$ to
 $\bigO(d \log d)$. FFTW~\citep{frigo2005} introduced the idea of empirical
 auto-tuning for FFT plans, generating machine-specific ``codelets'' at
 install time.
-AMD's AOCL-FFTW extends this with 636 AVX-512-specific codelets (versus
-one in the upstream distribution), delivering 1.2--2$\times$ speedups at
-key sizes on Zen~4 architectures~\citep{aocl2024}. I use dual-library
-dispatch (AOCL-FFTW vs.\ Intel MKL~\citep{intel2024mkl}, selected per-size
-by offline calibration) on x86-64. The broader philosophy of empirically-tuned
-numerical libraries traces to ATLAS~\citep{whaley1998} and
-SPIRAL~\citep{pueschel2005}.
+AMD's AOCL-FFTW extends this with znver4-tuned AVX-512-specific codelets
+(versus the generic upstream distribution)~\citep{aocl2024}. I use
+AOCL-FFTW as the sole FFT backend on Zen~4 after a direct A/B measurement
+against plain system FFTW3 (Section~\ref{sec:experiments}) showed a clean,
+reproducible win at the kernel level with no sizes where the reverse held
+--- so no dual-library dispatch is warranted on this platform, unlike the
+GPU's cuFFT/cuFFTDx split (Section~\ref{sec:gpu-results}). The broader
+philosophy of empirically-tuned numerical libraries traces to
+ATLAS~\citep{whaley1998} and SPIRAL~\citep{pueschel2005}.
 
 \paragraph{Roofline performance models.}
 The roofline model of \citet{williams2009} bounds achievable performance
@@ -781,8 +783,8 @@ $V_2$ equities (see Appendix) and cross-checked between engines.
     with Apple vDSP dispatch at 33 supported sizes.
   \item \textbf{AMD Ryzen 9 7950X (Zen~4):} 16 homogeneous cores,
     AVX-512 (8 FP64/vector), 2 FMA units per core, 1\,MB per-core L2,
-    32\,MB shared L3. FFT: AOCL-FFTW (636 AVX-512 codelets) + Intel MKL
-    dual dispatch via \texttt{dlopen}.
+    32\,MB shared L3. FFT: AOCL-FFTW, znver4-tuned, sole backend (no
+    dual-library dispatch --- see Related Work).
 \end{itemize}
 
 \subsection{CPU Performance}
@@ -859,23 +861,19 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 
 \paragraph{Platform comparison.}
 Zen~4 benefits from AVX-512's 8-wide FP64 FMA (versus NEON's 2-wide) in the
-linear engine, and from AOCL-FFTW's 636 AVX-512 codelets in the hybrid
-engine. AOCL-FFTW delivers 1.2--2$\times$ speedups at FFT sizes in the
-1K--32K range over the upstream FFTW distribution. In a head-to-head
-comparison across 749 calibrated sizes, AOCL-FFTW outperforms Intel MKL at
-637 sizes, with MKL winning the remaining 112 (mostly small composites
-14--64, plus size 131{,}072). The per-size \texttt{calib\_lib[]} array
-selects the faster library for each FFT plan.
+linear engine, and from AOCL-FFTW's znver4-tuned AVX-512 codelets in the
+hybrid engine.
 
 A direct A/B comparison of AOCL-FFTW versus the upstream (plain) FFTW
 distribution was conducted on the same Zen~4 machine, at the same FFT size
 ($d = 32{,}768$), with the same \texttt{FFTW\_PATIENT} flag, under the
 \texttt{performance} cpufreq governor. AOCL-FFTW completed the per-pipeline
 FFT work in 53--57\,$\mu$s versus 66--69\,$\mu$s for plain FFTW --- a
-20--25\% advantage, reproducible across repeated runs. Unlike the
-AOCL-vs-MKL split (where MKL wins at 112 sizes and dual dispatch is
-warranted), AOCL-FFTW is uniformly faster than plain FFTW at every
-calibrated size, so no dual-library dispatch between the two is needed.
+20--25\% advantage, reproducible across repeated runs, with no calibrated
+size where the reverse held. AOCL-FFTW is therefore used as the sole FFT
+backend on Zen~4; no dual-library dispatch is needed on this platform
+(contrast the GPU's cuFFT/cuFFTDx tier selection, Section~\ref{sec:gpu-results},
+where dispatch genuinely depends on problem size).
 
 M3~Pro benefits from Apple vDSP's interleaved DFT dispatch at 33 supported
 FFT sizes (10--18\% faster than FFTW at those sizes) and from the
@@ -1033,14 +1031,14 @@ the harmonic-mean bandwidth model of Equation~\ref{eq:harmonic}.
 \toprule
 \textbf{Constant} & \textbf{M3 Pro} & \textbf{Zen 4} & \textbf{Description} \\
 \midrule
-$\tau_{\text{FMA}}$ (ns) & 0.084 & 0.050 & Scalar FMA latency \\
-$W_{L2}$ (GB/s) & 112.9 & 118.9 & Measured L2 streaming BW \\
-$W_{L3}$ (GB/s) & 110.1 & 50.3  & Measured L3 streaming BW \\
-$W_{\text{DRAM}}$ (GB/s) & 109.2 & 26.5  & Measured DRAM streaming BW \\
+$\tau_{\text{FMA}}$ (ns) & 0.050 & 0.079 & Scalar FMA latency \\
+$W_{L2}$ (GB/s) & 113.3 & \dag & Measured L2 streaming BW \\
+$W_{L3}$ (GB/s) & 111.3 & \dag & Measured L3 streaming BW \\
+$W_{\text{DRAM}}$ (GB/s) & 110.7 & \dag & Measured DRAM streaming BW \\
 $L_2$ (bytes) & 1\,MB & 1\,MB  & Per-core L2 size \\
 $L_3$ (bytes) &  -  & 32\,MB & Shared L3 size \\
 Typical $B$ & 16 & 32 & Cost-model block size \\
-FFT backend & FFTW+vDSP & AOCL+MKL & Library dispatch \\
+FFT backend & FFTW+vDSP & AOCL (sole) & Library dispatch \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1048,6 +1046,14 @@ FFT backend & FFTW+vDSP & AOCL+MKL & Library dispatch \\
 Note: M3~Pro's shared L2 architecture (16--36\,MB total, configuration-dependent) does not
 fit neatly into the per-core L2/L3 model, so only the 1\,MB performance-core L2 is listed.
 The bandwidth values reflect measured streaming throughput at the respective cache levels.
+\dag~Zen~4's bandwidth-constant measurement pipeline predates this work's calibration
+audit and produces values inconsistent with plausible hardware limits (e.g.\ a
+raw-file reading in the hundreds-of-TB/s range for $W_{L2}$); this is a real,
+pre-existing measurement bug, not fixed as part of this paper's scope, and the
+values are omitted here rather than reported with false confidence. These
+constants feed the linear engine's roofline dispatch cost, not correctness ---
+\texttt{bench\_grid verify} is unaffected --- but dispatch quality for
+linear-favorable cells on Zen~4 should be treated as unaudited pending a fix.
 
 \subsection{Calibration Methodology: Direct Measurement vs.\ Indirect Regression}\label{sec:calib-methodology}
 
