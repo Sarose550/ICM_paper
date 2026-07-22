@@ -57,9 +57,9 @@ Zen~4. A CUDA implementation for NVIDIA B200 extends this to roughly
 
 Multi-table poker tournaments are structured competitions in which
 players begin with equal chip stacks and are progressively eliminated as
-they lose their chips. A payout structure $\pi = (\pi_1, \pi_2, \ldots, \pi_k)$ specifies the prize awarded to each finishing position, with
-$k \leq n$ positions receiving nonzero prizes and $\pi_1 \geq \pi_2 \geq
-\cdots \geq \pi_k \geq 0$. The \emph{Independent Chip Model} (ICM)
+they lose their chips. A payout structure $\pi = (\pi_0, \pi_1, \ldots, \pi_{k-1})$ specifies the prize awarded to each finishing position, with
+$k \leq n$ positions receiving nonzero prizes and $\pi_0 \geq \pi_1 \geq
+\cdots \geq \pi_{k-1} \geq 0$ (position $r+1$ receives payout $\pi_r$). The \emph{Independent Chip Model} (ICM)
 provides a principled mapping from a player's chip stack to their
 expected tournament equity - the expected prize money they will
 receive~\citep{malmuth1987,harville1973}.
@@ -191,13 +191,13 @@ here, with supporting proofs where they provide insight.
 
 \subsection{The Malmuth--Harville Model and Exponential Clocks}
 
-\begin{definition}[Tournament instance]
+\begin{definition}[Tournament instance]\label{def:tournament}
 A \emph{tournament instance} is a tuple $(n, S, \pi)$ where
 $n \in \mathbb{N}$ is the number of players, $S = (S_1, \ldots, S_n)
 \in \mathbb{R}_{>0}^n$ is the vector of chip stacks with $S_i > 0$ for all
-$i$, and $\pi = (\pi_1, \ldots, \pi_k) \in \mathbb{R}_{\geq 0}^k$
-is the payout vector with $k \leq n$ and $\pi_1 \geq \pi_2 \geq \cdots
-\geq \pi_k \geq 0$.
+$i$, and $\pi = (\pi_0, \ldots, \pi_{k-1}) \in \mathbb{R}_{\geq 0}^k$
+is the payout vector with $k \leq n$ and $\pi_0 \geq \pi_1 \geq \cdots
+\geq \pi_{k-1} \geq 0$ (0-indexed: position $r+1$ receives payout $\pi_r$).
 \end{definition}
 
 \begin{definition}[Malmuth--Harville model]\label{def:mh}
@@ -283,14 +283,14 @@ from $dt = -dv/v$ cancels the bound flip, yielding:
   = \int_0^1 S_i \, v^{S_i - 1} \cdot [x^r]\, Q_i(x; v) \, dv.
 \end{equation}
 
-Multiplying by the payout $\pi_{r+1}$ and summing over positions:
+Multiplying by the payout $\pi_r$ and summing over positions:
 \begin{equation}\label{eq:equity-integral}
   E_i = \int_0^1 S_i \, v^{S_i - 1} \,
-    \underbrace{\sum_{r=0}^{k-1} \pi_{r+1} \cdot [x^r]\, Q_i(x; v)}_{%
+    \underbrace{\sum_{r=0}^{k-1} \pi_r \cdot [x^r]\, Q_i(x; v)}_{%
       \textstyle =: \Psi_i(v)} \, dv.
 \end{equation}
 
-The inner sum $\Psi_i(v) = \sum_{r=0}^{k-1} \pi_{r+1} \cdot [x^r] Q_i(x; v)$
+The inner sum $\Psi_i(v) = \sum_{r=0}^{k-1} \pi_r \cdot [x^r] Q_i(x; v)$
 is the dot product of the payout vector with the coefficient vector of
 $Q_i$ - exactly the quantity the subproduct tree will compute efficiently.
 
@@ -321,7 +321,7 @@ tanh-sinh quadrature).
 % ======================================================================
 
 The quadrature rule reduces ICM computation to evaluating
-$\Psi_i(v_q) = \sum_{r=0}^{k-1} \pi_{r+1} \cdot [x^r] Q_i(x; v_q)$ for
+$\Psi_i(v_q) = \sum_{r=0}^{k-1} \pi_r \cdot [x^r] Q_i(x; v_q)$ for
 all $i = 1, \ldots, n$ at each of $Q$ quadrature points. Computing
 $Q_i(x; v_q) = \prod_{j \neq i} (a_j + b_j x)$ naively - one player at a
 time - would cost $\bigO(n^2 k)$ per quadrature point. This section
@@ -331,10 +331,8 @@ simultaneously, with cost-model-driven automatic dispatch.
 I will work throughout with truncated polynomials in the vector space
 $\mathbb{R}[x]_{<k} \cong \mathbb{R}^k$ of polynomials of degree $<k$,
 equipped with the Euclidean inner product
-$\ip{f}{g} = \sum_{m=0}^{k-1} f_m g_m$. For 0-indexed access into this
-vector space, define $\bar\pi_m = \pi_{m+1}$ for $m=0,\ldots,k-1$ (the
-zero-indexed payout vector), so that
-$\Psi_i(v) = \ip{\bar\pi}{Q_i}$.
+$\ip{f}{g} = \sum_{m=0}^{k-1} f_m g_m$, so that
+$\Psi_i(v) = \ip{\pi}{Q_i}$.
 
 \subsection{Engine 1: Batched Linear Forward-Backward}\label{sec:linear}
 
@@ -345,11 +343,11 @@ a forward-backward decomposition. It is optimal when $k$ is small.
 \caption{Linear Forward-Backward}\label{alg:linear}
 \DontPrintSemicolon
 \SetAlgoLined
-\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\bar\pi \in \mathbb{R}^k$}
+\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\pi \in \mathbb{R}^k$}
 \KwOut{$\Psi_1, \ldots, \Psi_n$}
 \BlankLine
 \tcp{Forward: prefix products}
-$g^{(0)} \leftarrow \bar\pi$\;
+$g^{(0)} \leftarrow \pi$\;
 \For{$j = 1, \ldots, n$}{
   \For{$m = 0, \ldots, k-2$}{
     $g^{(j)}_m \leftarrow a_j \cdot g^{(j-1)}_m + (1-a_j) \cdot g^{(j-1)}_{m+1}$\;
@@ -369,7 +367,7 @@ $(R_0, \ldots, R_{k-1}) \leftarrow (1, 0, \ldots, 0)$\;
 \Return{$\Psi_1, \ldots, \Psi_n$}
 \end{algorithm}
 
-The forward pass computes prefix products $g^{(j)} = \bar\pi * P_1 * \cdots
+The forward pass computes prefix products $g^{(j)} = \pi * P_1 * \cdots
 * P_j \bmod x^k$, where $P_j(x) = a_j + (1-a_j)x$. The backward pass
 constructs suffix products $R = P_{j+1} * \cdots * P_n \bmod x^k$
 incrementally, extracting $\Psi_j = \ip{g^{(j-1)}}{R}$ at each step.
@@ -416,7 +414,7 @@ children (truncated to degree $k$):
 \DontPrintSemicolon
 \SetAlgoLined
 \KwIn{Leaf polynomials $P^{(0)}_1, \ldots, P^{(0)}_n$,
-  0-indexed payout $\bar\pi$, degree $k$}
+  0-indexed payout $\pi$, degree $k$}
 \KwOut{$\Psi_1, \ldots, \Psi_n$}
 \BlankLine
 \tcp{Build (bottom-up)}
@@ -427,7 +425,7 @@ children (truncated to degree $k$):
 }
 \BlankLine
 \tcp{Propagate (top-down)}
-$g^{(L-1)} \leftarrow \bar\pi$\;
+$g^{(L-1)} \leftarrow \pi$\;
 \For{$\ell = L-1, L-2, \ldots, 1$}{
   \For{each node $i$ at level $\ell$ \textbf{in parallel}}{
     $g^{(\ell-1)}_{2i} \leftarrow g^{(\ell)}_i \star P^{(\ell-1)}_{2i+1}$
@@ -470,8 +468,8 @@ binary tree of truncated convolutions. Reading from root to leaf $j$, the
 product decomposes as $R = Q_j * P_j \bmod x^k$, where $Q_j$ is the product
 of all \emph{sibling} polynomials on the path from leaf $j$ to the root.
 
-The propagation phase computes $\ip{\bar\pi}{Q_j}$ for all $j$ by
-applying the adjoint of the build phase's linear map, with $\bar\pi$ as
+The propagation phase computes $\ip{\pi}{Q_j}$ for all $j$ by
+applying the adjoint of the build phase's linear map, with $\pi$ as
 the seed. At each internal node, the build phase computes
 $(L, R) \mapsto L * R \bmod x^k$. Holding the sibling fixed and viewing
 this as the linear map $T_S$ (where $S$ denotes the sibling polynomial)
@@ -489,12 +487,12 @@ $\mathrm{leaves}(i,\ell)$ be the leaf indices in the subtree rooted at node
 $i$ at level $\ell$, and let $C_j^{(\ell)}$ be the set of all leaves
 \emph{outside} this subtree. The invariant is:
 \begin{equation}\label{eq:invariant}
-  g^{(\ell)}_i = \bar\pi \star
+  g^{(\ell)}_i = \pi \star
     \Bigl(\prod_{j \in C_j^{(\ell)}} P_j \bmod x^k \Bigr).
 \end{equation}
 
 \textbf{Base} ($\ell = L{-}1$, root): $C_j^{(L-1)} = \emptyset$, and
-$\bar\pi \star 1 = \bar\pi = g^{(L-1)}$.
+$\pi \star 1 = \pi = g^{(L-1)}$.
 
 \textbf{Inductive step}: Assume the invariant holds at level $\ell$ for
 node $i$. The left child receives
@@ -502,21 +500,21 @@ $g^{(\ell-1)}_{2i} = g^{(\ell)}_i \star P^{(\ell-1)}_{2i+1}$. For any
 test vector $f$:
 \begin{align*}
   \ip{f}{g^{(\ell-1)}_{2i}}
-  &= \ip{f}{(\bar\pi \star R_C) \star P_{2i+1}} \\
-  &= \ip{f * P_{2i+1}}{\bar\pi \star R_C}
+  &= \ip{f}{(\pi \star R_C) \star P_{2i+1}} \\
+  &= \ip{f * P_{2i+1}}{\pi \star R_C}
     \quad\text{(Lemma~\ref{lem:adj-conv})} \\
-  &= \ip{(f * P_{2i+1}) * R_C}{\bar\pi}
+  &= \ip{(f * P_{2i+1}) * R_C}{\pi}
     \quad\text{(Lemma~\ref{lem:adj-conv})} \\
-  &= \ip{f * (P_{2i+1} * R_C)}{\bar\pi}
+  &= \ip{f * (P_{2i+1} * R_C)}{\pi}
     \quad\text{(associativity)} \\
-  &= \ip{f}{\bar\pi \star (P_{2i+1} * R_C)}
+  &= \ip{f}{\pi \star (P_{2i+1} * R_C)}
     \quad\text{(Lemma~\ref{lem:adj-conv})}.
 \end{align*}
 Since this holds for all $f$, the invariant holds for the left child with
 $C_j^{(\ell-1)} = C_j^{(\ell)} \cup \mathrm{leaves}(2i+1, \ell-1)$. The
 right child is symmetric. At level 0, $C_j^{(0)} = [n] \setminus \{j\}$,
-so $g^{(0)}_j = \bar\pi \star Q_j$ and
-$g^{(0)}_j[0] = \ip{\bar\pi}{Q_j} = \Psi_j$.
+so $g^{(0)}_j = \pi \star Q_j$ and
+$g^{(0)}_j[0] = \ip{\pi}{Q_j} = \Psi_j$.
 \end{proof}
 
 \begin{remark}
@@ -525,7 +523,7 @@ differentiation applied to the build phase~\citep{griewank2008}. Writing
 $T_\ell$ for the convolution map $T_h$ of Lemma~\ref{lem:adj-conv}
 instantiated with $h$ equal to level $\ell$'s sibling polynomial, the
 build computes $T_L \circ \cdots \circ T_1$, and propagation computes
-$T_1^{\ast} \circ \cdots \circ T_L^{\ast}$ applied to $\bar\pi$. A
+$T_1^{\ast} \circ \cdots \circ T_L^{\ast}$ applied to $\pi$. A
 standard result in reverse-mode AD states that the adjoint of a linear
 program has the same arithmetic complexity, giving complexity parity
 between build and propagation for free.
@@ -569,7 +567,7 @@ computation with the tree engine for inter-block structure.
 \caption{Hybrid Block-Divide}\label{alg:hybrid}
 \DontPrintSemicolon
 \SetAlgoLined
-\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\bar\pi$, degree $k$, block size $B$}
+\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\pi$, degree $k$, block size $B$}
 \KwOut{$\Psi_1, \ldots, \Psi_n$}
 \BlankLine
 \tcp{Step 1: Build block products}
@@ -579,7 +577,7 @@ computation with the tree engine for inter-block structure.
 \BlankLine
 \tcp{Step 2: Inter-block tree (Algorithm~\ref{alg:tree}) with block leaves}
 Build subproduct tree from block products $P_0, \ldots, P_{\lceil n/B \rceil - 1}$\;
-Propagate $\bar\pi$ to obtain block-level $g$-vectors $g_b$\;
+Propagate $\pi$ to obtain block-level $g$-vectors $g_b$\;
 \BlankLine
 \tcp{Step 3: Within-block divide}
 \For{each block $b$}{
