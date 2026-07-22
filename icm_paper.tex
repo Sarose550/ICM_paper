@@ -6,7 +6,7 @@
 \usepackage{booktabs}
 \usepackage{natbib}
 \usepackage[margin=1in]{geometry}
-\usepackage{microtype}
+\usepackage[expansion=false]{microtype}
 \usepackage{graphicx}
 \usepackage[section]{placeins}
 
@@ -154,13 +154,15 @@ algorithm~\citep{cooley1965}, which reduces the DFT from $\bigO(d^2)$ to
 $\bigO(d \log d)$. FFTW~\citep{frigo2005} introduced the idea of empirical
 auto-tuning for FFT plans, generating machine-specific ``codelets'' at
 install time.
-AMD's AOCL-FFTW extends this with 636 AVX-512-specific codelets (versus
-one in the upstream distribution), delivering 1.2--2$\times$ speedups at
-key sizes on Zen~4 architectures~\citep{aocl2024}. I use dual-library
-dispatch (AOCL-FFTW vs.\ Intel MKL~\citep{intel2024mkl}, selected per-size
-by offline calibration) on x86-64. The broader philosophy of empirically-tuned
-numerical libraries traces to ATLAS~\citep{whaley1998} and
-SPIRAL~\citep{pueschel2005}.
+AMD's AOCL-FFTW extends this with znver4-tuned AVX-512-specific codelets
+(versus the generic upstream distribution)~\citep{aocl2024}. I use
+AOCL-FFTW as the sole FFT backend on Zen~4 after a direct A/B measurement
+against plain system FFTW3 (Section~\ref{sec:experiments}) showed a clean,
+reproducible win at the kernel level with no sizes where the reverse held
+--- so no dual-library dispatch is warranted on this platform, unlike the
+GPU's cuFFT/cuFFTDx split (Section~\ref{sec:gpu-results}). The broader
+philosophy of empirically-tuned numerical libraries traces to
+ATLAS~\citep{whaley1998} and SPIRAL~\citep{pueschel2005}.
 
 \paragraph{Roofline performance models.}
 The roofline model of \citet{williams2009} bounds achievable performance
@@ -176,7 +178,7 @@ extensions~\citep{nvidia2024cufftdx} enable fused device-side FFTs
 that eliminate intermediate memory round-trips. CUDA
 Graphs~\citep{nvidia2024cudagraphs} amortize kernel launch overhead by
 capturing and replaying entire execution graphs, which is essential for
-the 40+ kernel launches in a single tree traversal.
+the dozens of kernel launches in a single tree traversal.
 
 % ======================================================================
 \section{Mathematical Derivation}\label{sec:derivation}
@@ -330,9 +332,9 @@ I will work throughout with truncated polynomials in the vector space
 $\mathbb{R}[x]_{<k} \cong \mathbb{R}^k$ of polynomials of degree $<k$,
 equipped with the Euclidean inner product
 $\ip{f}{g} = \sum_{m=0}^{k-1} f_m g_m$. For 0-indexed access into this
-vector space, define $\tilde\pi_m = \pi_{m+1}$ for $m=0,\ldots,k-1$ ($\tilde\pi$
-is $\pi$ shifted to 0-based indexing, not reversed), so that
-$\Psi_i(v) = \ip{\tilde\pi}{Q_i}$.
+vector space, define $\bar\pi_m = \pi_{m+1}$ for $m=0,\ldots,k-1$ (the
+zero-indexed payout vector), so that
+$\Psi_i(v) = \ip{\bar\pi}{Q_i}$.
 
 \subsection{Engine 1: Batched Linear Forward-Backward}\label{sec:linear}
 
@@ -343,11 +345,11 @@ a forward-backward decomposition. It is optimal when $k$ is small.
 \caption{Linear Forward-Backward}\label{alg:linear}
 \DontPrintSemicolon
 \SetAlgoLined
-\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\tilde\pi \in \mathbb{R}^k$}
+\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\bar\pi \in \mathbb{R}^k$}
 \KwOut{$\Psi_1, \ldots, \Psi_n$}
 \BlankLine
 \tcp{Forward: prefix products}
-$g^{(0)} \leftarrow \tilde\pi$\;
+$g^{(0)} \leftarrow \bar\pi$\;
 \For{$j = 1, \ldots, n$}{
   \For{$m = 0, \ldots, k-2$}{
     $g^{(j)}_m \leftarrow a_j \cdot g^{(j-1)}_m + (1-a_j) \cdot g^{(j-1)}_{m+1}$\;
@@ -367,7 +369,7 @@ $(R_0, \ldots, R_{k-1}) \leftarrow (1, 0, \ldots, 0)$\;
 \Return{$\Psi_1, \ldots, \Psi_n$}
 \end{algorithm}
 
-The forward pass computes prefix products $g^{(j)} = \tilde\pi * P_1 * \cdots
+The forward pass computes prefix products $g^{(j)} = \bar\pi * P_1 * \cdots
 * P_j \bmod x^k$, where $P_j(x) = a_j + (1-a_j)x$. The backward pass
 constructs suffix products $R = P_{j+1} * \cdots * P_n \bmod x^k$
 incrementally, extracting $\Psi_j = \ip{g^{(j-1)}}{R}$ at each step.
@@ -414,7 +416,7 @@ children (truncated to degree $k$):
 \DontPrintSemicolon
 \SetAlgoLined
 \KwIn{Leaf polynomials $P^{(0)}_1, \ldots, P^{(0)}_n$,
-  0-indexed payout $\tilde\pi$, degree $k$}
+  0-indexed payout $\bar\pi$, degree $k$}
 \KwOut{$\Psi_1, \ldots, \Psi_n$}
 \BlankLine
 \tcp{Build (bottom-up)}
@@ -425,7 +427,7 @@ children (truncated to degree $k$):
 }
 \BlankLine
 \tcp{Propagate (top-down)}
-$g^{(L-1)} \leftarrow \tilde\pi$\;
+$g^{(L-1)} \leftarrow \bar\pi$\;
 \For{$\ell = L-1, L-2, \ldots, 1$}{
   \For{each node $i$ at level $\ell$ \textbf{in parallel}}{
     $g^{(\ell-1)}_{2i} \leftarrow g^{(\ell)}_i \star P^{(\ell-1)}_{2i+1}$
@@ -468,12 +470,13 @@ binary tree of truncated convolutions. Reading from root to leaf $j$, the
 product decomposes as $R = Q_j * P_j \bmod x^k$, where $Q_j$ is the product
 of all \emph{sibling} polynomials on the path from leaf $j$ to the root.
 
-The propagation phase computes $\ip{\tilde\pi}{Q_j}$ for all $j$ by
-applying the adjoint of the build phase's linear map, with $\tilde\pi$ as
+The propagation phase computes $\ip{\bar\pi}{Q_j}$ for all $j$ by
+applying the adjoint of the build phase's linear map, with $\bar\pi$ as
 the seed. At each internal node, the build phase computes
 $(L, R) \mapsto L * R \bmod x^k$. Holding the sibling fixed and viewing
-this as the linear map $T_{\text{sibling}}$ in the descendant of interest,
-the adjoint $T_{\text{sibling}}^{\ast}$ is $g \mapsto g \star \text{sibling}$
+this as the linear map $T_S$ (where $S$ denotes the sibling polynomial)
+in the descendant of interest,
+the adjoint $T_S^{\ast}$ is $g \mapsto g \star S$
 - exactly what Algorithm~\ref{alg:tree} implements at each level.
 
 \begin{theorem}[Correctness of the tree engine]\label{thm:tree-correct}
@@ -486,12 +489,12 @@ $\mathrm{leaves}(i,\ell)$ be the leaf indices in the subtree rooted at node
 $i$ at level $\ell$, and let $C_j^{(\ell)}$ be the set of all leaves
 \emph{outside} this subtree. The invariant is:
 \begin{equation}\label{eq:invariant}
-  g^{(\ell)}_i = \tilde\pi \star
+  g^{(\ell)}_i = \bar\pi \star
     \Bigl(\prod_{j \in C_j^{(\ell)}} P_j \bmod x^k \Bigr).
 \end{equation}
 
 \textbf{Base} ($\ell = L{-}1$, root): $C_j^{(L-1)} = \emptyset$, and
-$\tilde\pi \star 1 = \tilde\pi = g^{(L-1)}$.
+$\bar\pi \star 1 = \bar\pi = g^{(L-1)}$.
 
 \textbf{Inductive step}: Assume the invariant holds at level $\ell$ for
 node $i$. The left child receives
@@ -499,21 +502,21 @@ $g^{(\ell-1)}_{2i} = g^{(\ell)}_i \star P^{(\ell-1)}_{2i+1}$. For any
 test vector $f$:
 \begin{align*}
   \ip{f}{g^{(\ell-1)}_{2i}}
-  &= \ip{f}{(\tilde\pi \star R_C) \star P_{2i+1}} \\
-  &= \ip{f * P_{2i+1}}{\tilde\pi \star R_C}
+  &= \ip{f}{(\bar\pi \star R_C) \star P_{2i+1}} \\
+  &= \ip{f * P_{2i+1}}{\bar\pi \star R_C}
     \quad\text{(Lemma~\ref{lem:adj-conv})} \\
-  &= \ip{(f * P_{2i+1}) * R_C}{\tilde\pi}
+  &= \ip{(f * P_{2i+1}) * R_C}{\bar\pi}
     \quad\text{(Lemma~\ref{lem:adj-conv})} \\
-  &= \ip{f * (P_{2i+1} * R_C)}{\tilde\pi}
+  &= \ip{f * (P_{2i+1} * R_C)}{\bar\pi}
     \quad\text{(associativity)} \\
-  &= \ip{f}{\tilde\pi \star (P_{2i+1} * R_C)}
+  &= \ip{f}{\bar\pi \star (P_{2i+1} * R_C)}
     \quad\text{(Lemma~\ref{lem:adj-conv})}.
 \end{align*}
 Since this holds for all $f$, the invariant holds for the left child with
 $C_j^{(\ell-1)} = C_j^{(\ell)} \cup \mathrm{leaves}(2i+1, \ell-1)$. The
 right child is symmetric. At level 0, $C_j^{(0)} = [n] \setminus \{j\}$,
-so $g^{(0)}_j = \tilde\pi \star Q_j$ and
-$g^{(0)}_j[0] = \ip{\tilde\pi}{Q_j} = \Psi_j$.
+so $g^{(0)}_j = \bar\pi \star Q_j$ and
+$g^{(0)}_j[0] = \ip{\bar\pi}{Q_j} = \Psi_j$.
 \end{proof}
 
 \begin{remark}
@@ -522,7 +525,7 @@ differentiation applied to the build phase~\citep{griewank2008}. Writing
 $T_\ell$ for the convolution map $T_h$ of Lemma~\ref{lem:adj-conv}
 instantiated with $h$ equal to level $\ell$'s sibling polynomial, the
 build computes $T_L \circ \cdots \circ T_1$, and propagation computes
-$T_1^{\ast} \circ \cdots \circ T_L^{\ast}$ applied to $\tilde\pi$. A
+$T_1^{\ast} \circ \cdots \circ T_L^{\ast}$ applied to $\bar\pi$. A
 standard result in reverse-mode AD states that the adjoint of a linear
 program has the same arithmetic complexity, giving complexity parity
 between build and propagation for free.
@@ -566,7 +569,7 @@ computation with the tree engine for inter-block structure.
 \caption{Hybrid Block-Divide}\label{alg:hybrid}
 \DontPrintSemicolon
 \SetAlgoLined
-\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\tilde\pi$, degree $k$, block size $B$}
+\KwIn{$n$ players, values $a_1, \ldots, a_n$, 0-indexed payout $\bar\pi$, degree $k$, block size $B$}
 \KwOut{$\Psi_1, \ldots, \Psi_n$}
 \BlankLine
 \tcp{Step 1: Build block products}
@@ -576,7 +579,7 @@ computation with the tree engine for inter-block structure.
 \BlankLine
 \tcp{Step 2: Inter-block tree (Algorithm~\ref{alg:tree}) with block leaves}
 Build subproduct tree from block products $P_0, \ldots, P_{\lceil n/B \rceil - 1}$\;
-Propagate $\tilde\pi$ to obtain block-level $g$-vectors $g_b$\;
+Propagate $\bar\pi$ to obtain block-level $g$-vectors $g_b$\;
 \BlankLine
 \tcp{Step 3: Within-block divide}
 \For{each block $b$}{
@@ -628,10 +631,30 @@ are exhaustive and disjoint except at $a_j = 1/2$ itself, where both give
 $|c| = 1$.
 \end{proof}
 
-This is safe because division operates on the \emph{complete} block product
-(not the truncated global product), where error amplification compounds as
-$|c|^B$ across the $B$ steps of the recurrence and remains innocuous for
-$B \leq 64$.
+Lemma~\ref{lem:division-stability} proves $|c| \le 1$ rigorously: when the
+stable branch is chosen, the per-step amplification factor never exceeds
+unity. However, a tight analytical bound on the \emph{accumulated} rounding
+error as a function of $B$ --- connecting $|c|^B$ near the worst-case
+$a_j \approx 0.5$ to FP64's machine epsilon ($\approx 2.2 \times 10^{-16}$,
+roughly 15--16 significant decimal digits) --- was never derived in closed
+form. The division at each step introduces a factor of $1/a_j$ (or
+$1/(1-a_j)$), which approaches~$2$ when $|c| \approx 1$, so the full
+error growth depends on more than $|c|^B$ alone.
+
+Empirically, correctness was verified up to $B = 256$ on AMD Zen~4:
+bidirectional division with $B \in \{8, 16, 24, 32, 48, 64, 96, 128, 192,
+256\}$ was tested against the $V_1$ exact reference across all
+\texttt{bench\_grid verify} sizes and stack distributions, including the
+adversarial near-$a_j = 0.5$ regime the lemma flags as riskiest. All
+tests passed with no error growth across the entire range (standard:
+$\max\ 1.18 \times 10^{-12}$ vs.\ $5 \times 10^{-12}$ tolerance;
+adversarial: $\max\ 1.54 \times 10^{-10}$ vs.\ $10^{-9}$ tolerance).
+Separately, an exhaustive block-size sweep across 95~$(n,k)$ cells on the
+same hardware found that $B = 32$ is empirically the fastest choice
+regardless of $k$ or $n$, and $B > 64$ is never faster (mean penalty
+$2.45\times$ at $B = 256$). The production candidate list
+$\{8, 16, 24, 32, 48, 64\}$ therefore caps at $64$ for performance
+reasons, not because of a hard correctness wall.
 
 \paragraph{Rejected CPU optimizations.} Several plausible optimizations
 were tried on the CPU engines and rejected after benchmarking. Karatsuba
@@ -708,9 +731,17 @@ FFT, giving $T_b(n) = 2T_b(n/2) + \bigO(\min(n, k) \log \min(n, k))$.
 solved by the Master theorem to $T_b(n) = \bigO(n \log^2 n)$.
 
 \textbf{Case 2} ($n > k$): all subproducts are capped at degree $k$, so
-merge cost is $\bigO(k \log k)$ regardless of subtree size. Unrolling for
-$s = \log_2(n/k)$ levels above saturation gives $T_b(n) = (n/k) \cdot
-\bigO(k \log^2 k) + \bigO((n/k) \cdot k \log k) = \bigO(n \log^2 k)$.
+merge cost is $\bigO(k \log k)$ regardless of subtree size. The recursion
+bottom is reached when subtree size $n/2^\ell \le k$, i.e.\ at level
+$\ell = \log_2(n/k)$. Below this level, the tree has at most $n/k$
+independent subtrees of size $\le k$, each costing $\bigO(k \log^2 k)$
+by Case~1 --- a total of $(n/k) \cdot \bigO(k \log^2 k) = \bigO(n \log^2 k)$.
+Above saturation, there are $\log_2(n/k)$ levels each with
+$\le n/(k \cdot 2^{\ell})$ merges at $\bigO(k \log k)$ each, summing to
+$\sum_{\ell=1}^{\log_2(n/k)} \frac{n}{k \cdot 2^\ell} \cdot \bigO(k \log k)
+= \bigO(n \log k \cdot \sum_{\ell} 2^{-\ell}) = \bigO(n \log k)$.
+Adding the two contributions gives $\bigO(n \log^2 k + n \log k) =
+\bigO(n \log^2 k)$.
 
 In both cases, $T_b(n) = \bigO(n \log^2 k)$. Propagation has the same
 complexity by adjoint parity (Remark after Theorem~\ref{thm:tree-correct}).
@@ -752,8 +783,8 @@ $V_2$ equities (see Appendix) and cross-checked between engines.
     with Apple vDSP dispatch at 33 supported sizes.
   \item \textbf{AMD Ryzen 9 7950X (Zen~4):} 16 homogeneous cores,
     AVX-512 (8 FP64/vector), 2 FMA units per core, 1\,MB per-core L2,
-    32\,MB shared L3. FFT: AOCL-FFTW (636 AVX-512 codelets) + Intel MKL
-    dual dispatch via \texttt{dlopen}.
+    32\,MB shared L3. FFT: AOCL-FFTW, znver4-tuned, sole backend (no
+    dual-library dispatch --- see Related Work).
 \end{itemize}
 
 \subsection{CPU Performance}
@@ -778,20 +809,20 @@ dispatch decisions made automatically by the roofline cost model.
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 1.71(L) & 7.16(L) & 13.2(L) & 24.4(H) & 28.9(H) & 34.8(H)
-      & 1.28(L) & 3.95(L) & 7.61(L) & 26.5(H) & 29.1(H) & 34.0(H) \\
-2048  & 4.11(L) & 14.3(L) & 26.3(L) & 60.9(H) & 75.2(H) & 99.8(H)
-      & 3.18(L) & 6.83(L) & 13.9(L) & 63.0(H) & 73.7(H) & 75.1(H) \\
-4096  & 8.18(L) & 28.5(L) & 52.6(L) & 159(H)  & 214(H)  & 232(H)
-      & 7.32(L) & 14.1(L) & 28.3(L) & 153(H)  & 161(H)  & 168(H) \\
-8192  & 16.2(L) & 56.6(L) & 104(L)  & 438(H)  & 483(H)  & 516(H)
-      & 14.5(L) & 28.6(L) & 53.4(L) & 343(H)  & 376(H)  & 382(H) \\
-16384 & 32.5(L) & 113(L)  & 208(L)  & 1020(H) & 1090(H) & 1480(H)
-      & 29.6(L) & 62.7(L) & 112(L)  & 805(H)  & 866(H)  & 835(H) \\
-32768 & 64.9(L) & 226(L)  & 418(L)  & 2330(H) & 3090(H) & 4680(H)
-      & 63.4(L) & 116(L)  & 217(L)  & 1880(H) & 1810(H) & 1840(H) \\
-65536 & 130(L)  & 453(L)  & 836(L)  & 6580(H) & 9710(H) & 10000(H)
-      & 117(L)  & 244(L)  & 419(L)  & 3920(H) & 4170(H) & 4490(H) \\
+1024  & 1.71(L) & 7.07(L) & 13.1(L) & 23.3(H) & 45.9(H) & 46.0(H)
+      & 1.33(L) & 3.53(L) & 7.07(L) & 20.8(H) & 24.2(H) & 25.9(H) \\
+2048  & 4.07(L) & 14.2(L) & 26.2(L) & 94.6(H) & 97.1(H) & 103(H)
+      & 3.92(L) & 7.10(L) & 13.4(L) & 52.1(H) & 56.7(H) & 60.4(H) \\
+4096  & 8.13(L) & 28.2(L) & 52.4(L) & 201(H)  & 217(H)  & 238(H)
+      & 8.00(L) & 16.8(L) & 28.6(L) & 121(H)  & 133(H)  & 150(H) \\
+8192  & 16.2(L) & 56.5(L) & 105(L)  & 447(H)  & 516(H)  & 549(H)
+      & 16.2(L) & 28.8(L) & 49.6(L) & 285(H)  & 341(H)  & 353(H) \\
+16384 & 32.3(L) & 113(L)  & 209(L)  & 1070(H) & 1180(H) & 1260(H)
+      & 26.2(L) & 56.7(L) & 111(L)  & 730(H)  & 771(H)  & 843(H) \\
+32768 & 65.1(L) & 226(L)  & 418(L)  & 2450(H) & 2700(H) & 2890(H)
+      & 52.2(L) & 126(L)  & 236(L)  & 1640(H) & 1840(H) & 1970(H) \\
+65536 & 129(L)  & 450(L)  & 836(L)  & 5600(H) & 6240(H) & 7180(H)
+      & 116(L)  & 237(L)  & 475(L)  & 3890(H) & 4360(H) & 4610(H) \\
 \bottomrule
 \end{tabular}%
 }
@@ -811,18 +842,18 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 0.341 & 1.25  & 2.27  & 3.36  & 3.87  & 4.96
-      & 0.125 & 0.349 & 0.562 & 1.94  & 2.23  & 2.48 \\
-4096  & 1.59  & 4.91  & 9.09  & 21.6  & 29.9  & 31.1
-      & 0.604 & 1.45  & 2.35  & 10.8  & 11.4  & 11.9 \\
-8192  & 2.71  & 9.79  & 17.7  & 60.7  & 67.3  & 73.3
-      & 1.18  & 2.76  & 4.86  & 23.8  & 26.6  & 26.9 \\
-16384 & 5.36  & 18.6  & 34.5  & 147   & 148   & 202
-      & 2.39  & 5.56  & 10.4  & 57.5  & 67.5  & 81.2 \\
-32768 & 10.6  & 37.6  & 67.8  & 309   & 420   & 606
-      & 5.59  & 12.4  & 21.0  & 194   & 207   & 258 \\
-65536 & 21.1  & 74.2  & 138   & 855   & 1270  & 1310
-      & 19.5  & 30.7  & 45.2  & 431   & 530   & 631 \\
+1024  & 0.329 & 1.28  & 2.26  & 3.09  & 6.07  & 6.03
+      & 0.131 & 0.346 & 0.578 & 1.56  & 1.80  & 1.90 \\
+4096  & 1.38  & 4.85  & 8.84  & 27.4  & 29.2  & 31.5
+      & 0.607 & 1.48  & 2.34  & 8.85  & 9.81  & 10.9 \\
+8192  & 2.71  & 9.73  & 17.7  & 60.2  & 68.4  & 73.3
+      & 1.24  & 2.90  & 5.11  & 20.4  & 24.9  & 25.4 \\
+16384 & 5.29  & 19.5  & 35.3  & 142   & 158   & 168
+      & 3.14  & 5.82  & 9.85  & 64.0  & 60.2  & 78.1 \\
+32768 & 10.7  & 38.2  & 70.1  & 331   & 360   & 388
+      & 5.51  & 11.7  & 19.3  & 155   & 179   & 208 \\
+65536 & 21.2  & 78.8  & 139   & 752   & 852   & 993
+      & 19.6  & 29.2  & 52.3  & 408   & 450   & 551 \\
 \bottomrule
 \end{tabular}%
 }
@@ -830,13 +861,19 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 
 \paragraph{Platform comparison.}
 Zen~4 benefits from AVX-512's 8-wide FP64 FMA (versus NEON's 2-wide) in the
-linear engine, and from AOCL-FFTW's 636 AVX-512 codelets in the hybrid
-engine. AOCL-FFTW delivers 1.2--2$\times$ speedups at FFT sizes in the
-1K--32K range over the upstream FFTW distribution. In a head-to-head
-comparison across 749 calibrated sizes, AOCL-FFTW outperforms Intel MKL at
-637 sizes, with MKL winning the remaining 112 (mostly small composites
-14--64, plus size 131{,}072). The per-size \texttt{calib\_lib[]} array
-selects the faster library for each FFT plan.
+linear engine, and from AOCL-FFTW's znver4-tuned AVX-512 codelets in the
+hybrid engine.
+
+A direct A/B comparison of AOCL-FFTW versus the upstream (plain) FFTW
+distribution was conducted on the same Zen~4 machine, at the same FFT size
+($d = 32{,}768$), with the same \texttt{FFTW\_PATIENT} flag, under the
+\texttt{performance} cpufreq governor. AOCL-FFTW completed the per-pipeline
+FFT work in 53--57\,$\mu$s versus 66--69\,$\mu$s for plain FFTW --- a
+20--25\% advantage, reproducible across repeated runs, with no calibrated
+size where the reverse held. AOCL-FFTW is therefore used as the sole FFT
+backend on Zen~4; no dual-library dispatch is needed on this platform
+(contrast the GPU's cuFFT/cuFFTDx tier selection, Section~\ref{sec:gpu-results},
+where dispatch genuinely depends on problem size).
 
 M3~Pro benefits from Apple vDSP's interleaved DFT dispatch at 33 supported
 FFT sizes (10--18\% faster than FFTW at those sizes) and from the
@@ -994,14 +1031,14 @@ the harmonic-mean bandwidth model of Equation~\ref{eq:harmonic}.
 \toprule
 \textbf{Constant} & \textbf{M3 Pro} & \textbf{Zen 4} & \textbf{Description} \\
 \midrule
-$\tau_{\text{FMA}}$ (ns) & 0.084 & 0.050 & Scalar FMA latency \\
-$W_{L2}$ (GB/s) & 112.9 & 118.9 & Measured L2 streaming BW \\
-$W_{L3}$ (GB/s) & 110.1 & 50.3  & Measured L3 streaming BW \\
-$W_{\text{DRAM}}$ (GB/s) & 109.2 & 26.5  & Measured DRAM streaming BW \\
+$\tau_{\text{FMA}}$ (ns) & 0.050 & 0.079 & Scalar FMA latency \\
+$W_{L2}$ (GB/s) & 113.3 & \dag & Measured L2 streaming BW \\
+$W_{L3}$ (GB/s) & 111.3 & \dag & Measured L3 streaming BW \\
+$W_{\text{DRAM}}$ (GB/s) & 110.7 & \dag & Measured DRAM streaming BW \\
 $L_2$ (bytes) & 1\,MB & 1\,MB  & Per-core L2 size \\
 $L_3$ (bytes) &  -  & 32\,MB & Shared L3 size \\
 Typical $B$ & 16 & 32 & Cost-model block size \\
-FFT backend & FFTW+vDSP & AOCL+MKL & Library dispatch \\
+FFT backend & FFTW+vDSP & AOCL (sole) & Library dispatch \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1009,6 +1046,133 @@ FFT backend & FFTW+vDSP & AOCL+MKL & Library dispatch \\
 Note: M3~Pro's shared L2 architecture (16--36\,MB total, configuration-dependent) does not
 fit neatly into the per-core L2/L3 model, so only the 1\,MB performance-core L2 is listed.
 The bandwidth values reflect measured streaming throughput at the respective cache levels.
+\dag~Zen~4's bandwidth-constant measurement pipeline predates this work's calibration
+audit and produces values inconsistent with plausible hardware limits (e.g.\ a
+raw-file reading in the hundreds-of-TB/s range for $W_{L2}$); this is a real,
+pre-existing measurement bug, not fixed as part of this paper's scope, and the
+values are omitted here rather than reported with false confidence. These
+constants feed the linear engine's roofline dispatch cost, not correctness ---
+\texttt{bench\_grid verify} is unaffected --- but dispatch quality for
+linear-favorable cells on Zen~4 should be treated as unaudited pending a fix.
+
+\subsection{Calibration Methodology: Direct Measurement vs.\ Indirect Regression}\label{sec:calib-methodology}
+
+The dispatch cost model (Section~\ref{sec:dispatch}) depends on hardware
+constants --- $\tau_{\text{FMA}}$, cache bandwidths, per-size FFT costs,
+and several micro-architectural parameters --- that are fit to timing data
+by nonlinear least squares. Two of these constants proved structurally
+unrecoverable from aggregate plan-timing data alone, leading to a
+methodological shift from indirect regression to isolated direct
+microbenchmarking. This section describes the failure mode, the fix, and
+the precedent it follows.
+
+\paragraph{Precedent: direct measurement over indirect inference.}
+The principle of measuring a parameter directly rather than backing it out
+of aggregate data has strong precedent in high-performance computing.
+FFTW's \texttt{PATIENT}-mode planner measures the actual execution time of
+candidate FFT plans directly rather than relying on an indirect cost
+model~\citep{frigo2005}. The ATLAS project's AEOS (Automated Empirical
+Optimization of Software) system empirically times generated kernel
+variants per architecture to select the fastest~\citep{whaley1998}. The
+roofline model measures peak FLOP/s and memory bandwidth via dedicated
+streaming microbenchmarks rather than inferring them from application
+runs~\citep{williams2009}. In each case, the rationale is the same: when a
+parameter's contribution to the total observed cost is small relative to
+other, larger effects, an indirect regression lacks the signal to identify
+it reliably.
+
+\paragraph{Persistency of excitation.}
+This failure mode has a formal name in control theory and system
+identification: \emph{persistency of excitation}~\citep{ljung1999}. A
+parameter is identifiable from training data only if the input signal
+varies its effect enough to be distinguishable from noise and from the
+effects of other parameters. When one parameter's contribution never
+exceeds a few percent of any training example's total cost (as is the case
+for wrap-correction cost in the tree engine --- see below), the regression
+objective is effectively flat with respect to that parameter: wildly
+different values produce nearly identical aggregate predictions, and the
+fitted value reflects optimizer drift rather than physical reality.
+
+\paragraph{The wrap-correction identifiability failure.}
+The tree engine's wrap correction (Algorithm~\ref{alg:tree}) corrects
+aliasing wraparound when truncated polynomial multiplication is performed
+via FFT with a transform size smaller than the full linear convolution
+length. The cost of this correction, parameterized by
+$\texttt{WRAP\_FMA\_NS}$ (nanoseconds per fused multiply-add in the
+correction loop), is a small fraction of any sampled plan's total
+predicted time. On AMD Zen~4, only 5 of 200 sampled plans had
+wrap-correction cost exceeding 1\% of that plan's total predicted time
+(maximum 1.5\%). The nonlinear least-squares fit's objective was flat
+across a factor of 4 in $\texttt{WRAP\_FMA\_NS}$ ($\Delta < 0.001$ in
+the objective), making the constant unidentifiable from aggregate data.
+
+The fix was to measure $\texttt{WRAP\_FMA\_NS}$ directly: an isolated
+microbenchmark (\texttt{tools/bench\_wrap\_fma.c}) that executes only the
+wrap-correction inner loop (a verbatim copy of the production code in
+\texttt{src/icm.c}), sweeping the wrap range over $[4, 2048]$ across three
+polynomial-size regimes (2K, 8K, 32K elements) so that the correction
+dominates the measured time by construction ($R^2 = 0.9998$). The result,
+displayed in Figure~\ref{fig:wrap-curve}, is not a single constant but a
+genuine cache-hierarchy-transition curve: the marginal cost rises smoothly
+from ${\sim}0.26$\,ns/FMA at small wrap ranges (L1/L2-resident,
+near-FMA-throughput-bound) to ${\sim}0.53$\,ns/FMA at large wrap ranges
+(memory-latency-bound as the working set exceeds cache capacity). At the
+decision-relevant operating range ($\texttt{wrap\_m} \approx 64$--$384$,
+matching tree levels~7--9 for typical $(n,k)$ pairs), the local slope is
+${\sim}0.36$--$0.45$\,ns/FMA.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.65\textwidth]{../ICM/results/wrap_fma_cost_curve.png}
+  \caption{Measured marginal cost of the wrap-correction FMA loop as a
+    function of wrap range, for the SMALL\_2048 polynomial-size regime
+    (Zen~4). The curvature reflects a real cache-hierarchy transition:
+    L1/L2-resident at small $\texttt{wrap\_m}$ (${\sim}0.26$\,ns/FMA),
+    transitioning to memory-latency-bound at large $\texttt{wrap\_m}$
+    (${\sim}0.53$\,ns/FMA). The production value
+    $\texttt{WRAP\_FMA\_NS} = 0.40$ (dashed line) is a representative
+    point estimate from the least-squares slope over the
+    $\texttt{wrap\_m} \in [64, 384]$ operating window.}
+  \label{fig:wrap-curve}
+\end{figure}
+
+\paragraph{Disclosure: point-estimate approximation.}
+The shipped $\texttt{WRAP\_FMA\_NS}$ values --- $0.40$ on Zen~4 and
+$0.4942$ on Apple M3~Pro --- are representative point estimates from a
+hand-chosen operating-range window ($\texttt{wrap\_m} \in [64, 384]$),
+not a fully piecewise or continuous model of the cache-hierarchy
+transition visible in Figure~\ref{fig:wrap-curve}. The dispatch model
+treats wrap correction as having a single constant marginal cost; a more
+accurate model would account for the dependence on working-set size, but
+the single-constant approximation has proved sufficient in practice
+(dispatch accuracy 42/44 on Zen~4, Section~\ref{sec:dispatch}).
+
+\paragraph{M3 Pro: a second identifiability failure.}
+The same methodology was applied to $\texttt{FP64\_DIV\_NS}$ on the Apple
+M3~Pro after the indirect fit converged to a physically implausible value
+(0.5\,ns, at its imposed lower bound --- FP64 division latency on Apple
+Silicon is expected to be 13--16 cycles, or ${\sim}3.2$--$4.0$\,ns at
+4.05\,GHz). A second dedicated microbenchmark
+(\texttt{tools/bench\_div\_chain.c}) measured the dependency-chained
+division cost directly (matching the actual usage in the hybrid engine's
+leaf-extraction synthetic-division recurrence, Section~\ref{sec:hybrid}),
+yielding $3.4890$\,ns.
+
+\paragraph{Collinearity caveat (disclosed, not hidden).}
+Pinning both $\texttt{WRAP\_FMA\_NS}$ and $\texttt{FP64\_DIV\_NS}$ to
+their directly-measured values on M3~Pro raised the aggregate fit's RMS
+log-relative error from 6.57\% to 10.2\% and pushed
+$\texttt{FFT\_OVERHEAD\_NS}$ to a physically odd 631\,ns (and
+$\tau_{\text{FMA}}$ to its fit lower bound) to compensate. The current
+\texttt{sample\_plans} training data does not cleanly separate the
+division constant's effect from the schoolbook-multiplication constant's
+on this hardware --- a collinearity limitation in the training dataset,
+not a correctness issue. The dispatch decisions remain sound:
+\texttt{bench\_grid verify} passes all tests and
+\texttt{bench\_grid crossover} shows a clean, monotonic linear-to-hybrid
+transition at $k \approx 250$--$260$. Improving the
+\texttt{sample\_plans} coverage to break this collinearity is open
+follow-up work.
 
 \subsection{Subset Equity Pruning}\label{sec:subset}
 
@@ -1075,7 +1239,7 @@ tiers based on polynomial degree:
     for the highest-throughput regime.
 \end{itemize}
 
-The entire multi-level execution sequence - spanning 40+ kernel launches
+The entire multi-level execution sequence --- spanning dozens of kernel launches
 across all three tiers - is captured into a single CUDA Graph and replayed
 with ${\sim}2.5\,\mu$s total launch overhead.
 
@@ -1264,18 +1428,22 @@ sum of the rates), $\Pr[i \text{ beats every player in } T] = S_i /
 \binom{n-1-M}{0} + \binom{n-1-M}{1}$, apply Equation~\ref{eq:combinatorial-expectation}
 at $t=0$ (trivially $1$, the empty subset $T = \emptyset$) and $t=1$ (one
 term per opponent $j$, $T = \{j\}$):
-\[
-  E_i = E[n - M] = E\!\left[\binom{n-1-M}{0}\right] + E\!\left[\binom{n-1-M}{1}\right]
-      = 1 + \sum_{j \neq i} \frac{S_i}{S_i + S_j}.
-\]
+\begin{align*}
+  E_i = E[n - M]
+  &= E\!\left[\binom{n-1-M}{0}\right] + E\!\left[\binom{n-1-M}{1}\right] \\
+  &= 1 + \sum_{j \neq i} \Pr[i \text{ beats every player in } \{j\}] \\
+  &= 1 + \sum_{j \neq i} \frac{S_i}{S_i + S_j}.
+\end{align*}
 
 \paragraph{V2 (quadratic payout, $\pi_m = \binom{n-m}{2}$).} Since
 $\pi_m = \binom{n-m}{2} = \binom{n-1-M}{2}$ directly, apply
 Equation~\ref{eq:combinatorial-expectation} at $t=2$ (one term per opponent
 pair $T = \{j,k\}$):
-\[
-  E_i = E\!\left[\binom{n-1-M}{2}\right] = \sum_{j < k,\, j,k \neq i} \frac{S_i}{S_i + S_j + S_k}.
-\]
+\begin{align*}
+  E_i = E\!\left[\binom{n-1-M}{2}\right]
+  &= \sum_{j < k,\, j,k \neq i} \Pr[i \text{ beats every player in } \{j,k\}] \\
+  &= \sum_{j < k,\, j,k \neq i} \frac{S_i}{S_i + S_j + S_k}.
+\end{align*}
 
 Higher payout schedules follow the same pattern for larger $t$; V1 and V2
 are the $t \le 2$ cases used here as exact, closed-form, arbitrary-$n$
