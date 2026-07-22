@@ -1032,9 +1032,9 @@ the harmonic-mean bandwidth model of Equation~\ref{eq:harmonic}.
 \textbf{Constant} & \textbf{M3 Pro} & \textbf{Zen 4} & \textbf{Description} \\
 \midrule
 $\tau_{\text{FMA}}$ (ns) & 0.050 & 0.079 & Scalar FMA latency \\
-$W_{L2}$ (GB/s) & 113.3 & \dag & Measured L2 streaming BW \\
-$W_{L3}$ (GB/s) & 111.3 & \dag & Measured L3 streaming BW \\
-$W_{\text{DRAM}}$ (GB/s) & 110.7 & \dag & Measured DRAM streaming BW \\
+$W_{L2}$ (GB/s) & 113.3 & 112\dag & Measured L2 streaming BW \\
+$W_{L3}$ (GB/s) & 111.3 & 34\dag & Measured L3 streaming BW \\
+$W_{\text{DRAM}}$ (GB/s) & 110.7 & 32\dag & Measured DRAM streaming BW \\
 $L_2$ (bytes) & 1\,MB & 1\,MB  & Per-core L2 size \\
 $L_3$ (bytes) &  -  & 32\,MB & Shared L3 size \\
 Typical $B$ & 16 & 32 & Cost-model block size \\
@@ -1046,14 +1046,28 @@ FFT backend & FFTW+vDSP & AOCL (sole) & Library dispatch \\
 Note: M3~Pro's shared L2 architecture (16--36\,MB total, configuration-dependent) does not
 fit neatly into the per-core L2/L3 model, so only the 1\,MB performance-core L2 is listed.
 The bandwidth values reflect measured streaming throughput at the respective cache levels.
-\dag~Zen~4's bandwidth-constant measurement pipeline predates this work's calibration
-audit and produces values inconsistent with plausible hardware limits (e.g.\ a
-raw-file reading in the hundreds-of-TB/s range for $W_{L2}$); this is a real,
-pre-existing measurement bug, not fixed as part of this paper's scope, and the
-values are omitted here rather than reported with false confidence. These
-constants feed the linear engine's roofline dispatch cost, not correctness ---
-\texttt{bench\_grid verify} is unaffected --- but dispatch quality for
-linear-favorable cells on Zen~4 should be treated as unaudited pending a fix.
+\dag~Zen~4's bandwidth-constant measurement pipeline produced values
+inconsistent with plausible hardware limits (e.g.\ a raw-file reading in
+the hundreds-of-TB/s range for $W_{L2}$), a pre-existing bug traced to
+\texttt{tools/calibrate.c}'s streaming microbenchmark: its inner loop body
+does not depend on the outer repetition counter, so an optimizing compiler
+can prove the repeated stores are redundant and collapse the whole
+repetition loop to a single real pass, while the byte-count computation
+still charges for every nominal repetition --- inflating the reported
+bandwidth by approximately the repetition factor. Dividing each Zen~4
+value by its own repetition count gives 112, 34, and 32\,GB/s for
+$W_{L2}$, $W_{L3}$, and $W_{\text{DRAM}}$ respectively --- all physically
+plausible --- consistent with this exact mechanism. The same source does
+not exhibit the bug when compiled for M3~Pro (its values were already
+sane), consistent with a GCC/x86 optimization difference rather than a
+flaw in the benchmark's logic. Fixed with a standard compiler barrier
+after each repetition; verified not to regress M3~Pro's already-correct
+values. \textbf{Not yet re-verified with a fresh calibration run on Zen~4
+hardware} --- the calibration machine became unreachable before the fix
+was written, so the corrected values above are a well-evidenced
+prediction, not a fresh measurement. These constants feed the linear
+engine's roofline dispatch cost, not correctness ---
+\texttt{bench\_grid verify} is unaffected regardless.
 
 \subsection{Calibration Methodology: Direct Measurement vs.\ Indirect Regression}\label{sec:calib-methodology}
 
