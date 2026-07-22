@@ -85,8 +85,10 @@ this framing, the combinatorial sum collapses into an integral that
 depends only on the chip stacks.
 
 The integral is evaluated by Gaussian quadrature with $Q = 256$ nodes,
-achieving exponential convergence to double-precision accuracy. The
-remaining challenge is evaluating the integrand efficiently at each
+achieving exponential convergence to double-precision accuracy - a choice
+driven by worst-case stack ratios up to $10^9$, not just the well-behaved
+uniform case (Section~\ref{sec:accuracy} justifies the specific value).
+The remaining challenge is evaluating the integrand efficiently at each
 quadrature point, which requires computing a degree-$k$ leave-one-out
 polynomial product for each of $n$ players. I address this with an
 FFT-accelerated binary subproduct tree whose propagation phase is the
