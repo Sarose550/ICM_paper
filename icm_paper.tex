@@ -41,8 +41,8 @@ generating-function coefficients, evaluated by Gaussian quadrature
 central challenge - computing leave-one-out polynomial products for all
 $n$ players - is solved by an FFT-accelerated subproduct tree whose
 propagation phase is the adjoint of its build phase, reducing cost from
-$\bigO(nk)$ to $\bigO(n \log^2 k)$ per quadrature point. A roofline
-cost model with harmonic-mean bandwidth blending dispatches
+$\bigO(nk)$ to $\bigO(n \log^2 k)$ per quadrature point. An empirical
+lookup table (calibrated per device) dispatches
 automatically between a batched linear engine and a hybrid block-tree
 engine. I evaluate the CPU implementation in detail on Apple M3~Pro and
 AMD Zen~4 (with AOCL-FFTW): the hybrid and linear engines compute exact
@@ -104,9 +104,11 @@ My contributions are:
     computation with direct polynomial arithmetic for intra-block
     computation, with correctness proved via the adjoint relationship
     between convolution and cross-correlation (Section~\ref{sec:algorithm}).
-  \item A roofline cost model with harmonic-mean bandwidth blending that
-    achieves 42/44 correct engine dispatch decisions on AMD Zen~4,
-    replacing simpler FMA-counting models (Section~\ref{sec:dispatch}).
+  \item An empirical crossover table, calibrated offline via direct
+    timing on the target hardware, that achieves 100\% correct engine
+    dispatch on all serial bench\_grid cells and 83/84 on parallel
+    cells across both platforms, replacing earlier analytical cost
+    models (Section~\ref{sec:dispatch}).
   \item Platform-specific implementations for ARM64 (Apple M3~Pro),
     x86-64 (AMD Zen~4 with AOCL-FFTW), and CUDA (NVIDIA B200 GPU),
     demonstrating the approach at scale (Sections~\ref{sec:experiments},
@@ -161,18 +163,25 @@ AMD's AOCL-FFTW extends this with znver4-tuned AVX-512-specific codelets
 AOCL-FFTW as the sole FFT backend on Zen~4 after a direct A/B measurement
 against plain system FFTW3 (Section~\ref{sec:experiments}) showed a clean,
 reproducible win at the kernel level with no sizes where the reverse held
---- so no dual-library dispatch is warranted on this platform, unlike the
+; so no dual-library dispatch is warranted on this platform, unlike the
 GPU's cuFFT/cuFFTDx split (Section~\ref{sec:gpu-results}). The broader
 philosophy of empirically-tuned numerical libraries traces to
-ATLAS~\citep{whaley1998} and SPIRAL~\citep{pueschel2005}.
+FFTW's \texttt{PATIENT} planner~\citep{frigo2005} and
+SPIRAL~\citep{pueschel2005}.  The approach of searching a parameter
+space empirically per architecture, as done here for the
+$(n,k)$-indexed crossover and block-size tables, is closest in
+spirit to the register-blocking search in the BeBOP/Sparsity
+system~\citep{demmel2004}, which times candidate register-blocking
+and unrolling parameters for sparse matrix kernels.
 
 \paragraph{Roofline performance models.}
 The roofline model of \citet{williams2009} bounds achievable performance
 by the minimum of peak compute and memory bandwidth, parameterized by
-arithmetic intensity. My dispatch cost model extends this idea to
-multi-level cache hierarchies using harmonic-mean bandwidth blending - a
-natural consequence of modeling total transfer time as the sum of
-time spent at each cache level.
+arithmetic intensity.  An earlier version of the engine dispatch
+(Section~\ref{sec:dispatch}) used a roofline model with harmonic-mean
+bandwidth blending across cache levels; this was superseded by the
+current empirical crossover table after the analytical model proved
+unable to match measured crossover points on real hardware.
 
 \paragraph{GPU FFT and CUDA Graphs.}
 NVIDIA's cuFFT library supports batched FFT execution, and the cuFFTDx
@@ -634,9 +643,9 @@ $|c| = 1$.
 Lemma~\ref{lem:division-stability} proves $|c| \le 1$ rigorously: when the
 stable branch is chosen, the per-step amplification factor never exceeds
 unity. However, a tight analytical bound on the \emph{accumulated} rounding
-error as a function of $B$ --- connecting $|c|^B$ near the worst-case
+error as a function of $B$, connecting $|c|^B$ near the worst-case
 $a_j \approx 0.5$ to FP64's machine epsilon ($\approx 2.2 \times 10^{-16}$,
-roughly 15--16 significant decimal digits) --- was never derived in closed
+roughly 15--16 significant decimal digits), was never derived in closed
 form. The division at each step introduces a factor of $1/a_j$ (or
 $1/(1-a_j)$), which approaches~$2$ when $|c| \approx 1$, so the full
 error growth depends on more than $|c|^B$ alone.
@@ -669,49 +678,67 @@ however, using vDSP directly inside the batched linear engine's inner
 loops (rather than only for FFT calls) was itself 2$\times$ \emph{slower},
 since per-call overhead at small $k$ exceeds any vectorization benefit.
 
-\subsection{Engine Dispatch: Roofline Cost Model}\label{sec:dispatch}
+\subsection{Engine Dispatch: Empirical Lookup Table}\label{sec:dispatch}
 
-Engine dispatch must compare the cost of the linear engine (memory-bound,
-$\bigO(nk)$) against the hybrid engine (compute-bound in the FFT phases,
-$\bigO(n \log^2 k)$). An earlier FMA-counting model correctly dispatched
-roughly 30/44 test cases: it had no knowledge of the cache hierarchy and
-could not distinguish L2-resident from DRAM-resident working sets.
+Engine dispatch must decide, for each $(n,k)$ pair, whether to use the
+linear engine (memory-bound, $\bigO(nk)$) or the hybrid engine
+(compute-bound in the FFT phases, $\bigO(n \log^2 k)$). An earlier
+FMA-counting roofline model with harmonic-mean bandwidth blending correctly
+dispatched roughly 30/44 test cases on Zen~4: it had no knowledge of the
+cache hierarchy and could not distinguish L2-resident from DRAM-resident
+working sets. A later roofline model~\citep{williams2009} improved this to
+42/44 (95.5\%) by modeling cache-level bandwidths explicitly, but the two
+remaining misses occurred where the engines were within 3--9\% of each
+other, and individual constants in the formula were validated against real
+embedded execution only to find that the aggregate comparison still did not
+match the true measured crossover on either M3~Pro or Zen~4 hardware.
 
-The replacement is a roofline model~\citep{williams2009} that computes
-cost as bytes streamed divided by effective bandwidth at the appropriate
-cache level. When a working set spans two cache levels, the effective
-bandwidth is the \emph{harmonic mean} of the two levels' bandwidths,
-weighted by the fraction of data at each level:
-\begin{equation}\label{eq:harmonic}
-  W_{\text{eff}} = \frac{B_{\text{total}}}{B_{\text{hit}}/W_{\text{hit}} +
-    B_{\text{miss}}/W_{\text{miss}}}
-  = \frac{1}{\alpha / W_{\text{hit}} + (1-\alpha) / W_{\text{miss}}},
-  \qquad \alpha := B_{\text{hit}} / B_{\text{total}}.
-\end{equation}
+The replacement is an empirical crossover table: $N = 6$ calibrated $n$
+values with corresponding crossover $k$ values where linear and hybrid
+engines have equal measured runtime, determined offline by binary search on
+real timing (median of 7 repetitions, $Q = 256$). At runtime,
+\texttt{select\_engine}$(n,k)$ performs log-linear interpolation between
+the two bracketing $n$ values in the \texttt{crossover\_n[]} table to
+obtain the crossover $k$ for the requested $n$, then dispatches to linear
+if $k$ is below the crossover and hybrid otherwise.  This is the same
+structural precedent as LAPACK's \texttt{ILAENV} \texttt{ISPEC=3} (the
+\texttt{NX} parameter): a problem-size crossover between two algorithms,
+measured empirically per machine, consulted as a cheap runtime threshold
+with no live racing in production.
 
-The model requires only independently measurable hardware constants - cache
-sizes and streaming bandwidths at each level - and produces dispatch
-decisions directly from the physics of data movement. Validation against 44
-representative $(n, k)$ pairs on Zen~4 shows 42 correct dispatch decisions
-(95.5\%), with the two errors occurring where the engines are within
-3--9\% of each other.
+The block size $B$ for the hybrid engine is selected by the same principle:
+\texttt{select\_best\_B}$(n,k)$ performs a 2D nearest-neighbor lookup over
+a calibrated $(n,k,B)$ grid (34 points per device), choosing the
+empirically fastest $B \in \{8, 16, 24, 32, 48, 64\}$.  Unlike the
+crossover $k$, $B$ is a discrete choice with no meaningful interpolation
+between adjacent values.  Typical selections are $B = 32$ on both M3~Pro
+and Zen~4, with occasional $B = 24$ or $B = 48$ at specific $(n,k)$
+combinations.
 
-The block size $B$ for the hybrid engine is selected from candidates
-$B \in \{8, 16, 24, 32, 48, 64\}$ by minimizing a calibrated cost function
-that accounts for block build cost, tree cost over $n/B$ leaves, and
-per-player divide cost. Typical selections are $B = 16$ on M3~Pro and
-$B = 32$ on Zen~4.
+Both tables (\texttt{crossover\_n[]}/\texttt{crossover\_k[]} and
+\texttt{bselect\_n[]}/\texttt{bselect\_k[]}/\texttt{bselect\_B[]}) are
+generated offline by \texttt{tools/calibrate\_crossover.c} and
+\texttt{tools/calibrate\_best\_b.c} respectively and stored in the
+per-device \texttt{fft\_config.h}.  This approach follows the broader
+autotuning tradition of measuring rather than modeling: FFTW's
+\texttt{PATIENT} planner times candidate FFT plans directly instead of
+relying on an indirect cost heuristic~\citep{frigo2005}, and, for the
+specific mechanism of searching a parameter space empirically per
+architecture, is closest to the register-blocking search in the
+BeBOP/Sparsity system~\citep{demmel2004}, though that work searches
+register-blocking/unrolling parameters for one fixed small kernel size
+rather than building a size-indexed lookup table as done here.
 
-\paragraph{Limitations of the cost model.} The 95.5\% dispatch accuracy
-above is not perfect, and the two misses are not an accident of the test
-set: they occur precisely where the linear and hybrid costs are close
-(3--9\%), which is exactly where a single-number cost estimate is least
-reliable. The harmonic-mean bandwidth blending in Equation~\ref{eq:harmonic}
-also assumes a working set cleanly split between two cache levels; M3~Pro's
-shared (rather than per-core) L2 architecture does not fit this assumption
-as cleanly as Zen~4's per-core L2/L3 split does (Section~\ref{sec:experiments}),
-so the model is better read as a calibrated practical heuristic than a
-first-principles guarantee.
+\paragraph{Validation.}
+The empirical crossover table produces correct dispatch decisions on all
+42 bench\_grid cells for M3~Pro and Zen~4 in serial mode, and on 83 of 84
+cells across both platforms in parallel mode.  The sole mismatch is
+Zen~4 parallel at $n = 65{,}536$, $k = n$, where the pure tree engine
+(T) edges out the hybrid engine (H) by a small margin; the dispatch model
+chooses between linear and hybrid only, and the tree engine's advantage in
+this regime is a parallel-specific effect (simpler clone structure with the
+same \texttt{PATIENT}-quality FFT plans) that the two-way dispatch does not
+attempt to capture.
 
 % ======================================================================
 \section{Theoretical Analysis}\label{sec:theory}
@@ -735,7 +762,7 @@ merge cost is $\bigO(k \log k)$ regardless of subtree size. The recursion
 bottom is reached when subtree size $n/2^\ell \le k$, i.e.\ at level
 $\ell = \log_2(n/k)$. Below this level, the tree has at most $n/k$
 independent subtrees of size $\le k$, each costing $\bigO(k \log^2 k)$
-by Case~1 --- a total of $(n/k) \cdot \bigO(k \log^2 k) = \bigO(n \log^2 k)$.
+by Case~1; a total of $(n/k) \cdot \bigO(k \log^2 k) = \bigO(n \log^2 k)$.
 Above saturation, there are $\log_2(n/k)$ levels each with
 $\le n/(k \cdot 2^{\ell})$ merges at $\bigO(k \log k)$ each, summing to
 $\sum_{\ell=1}^{\log_2(n/k)} \frac{n}{k \cdot 2^\ell} \cdot \bigO(k \log k)
@@ -848,8 +875,8 @@ Corollary~\ref{cor:blocking-constant} shows that blocking provides no
 asymptotic speedup: the tree phase is $\Theta(n\log^2 k)$ regardless of
 $B$, and the $nB$ block-build term grows faster than the tree-phase
 savings for any $B \ge 4$.  The optimal $B$ is therefore determined
-entirely by hardware constant factors --- cache-line width, SIMD lane
-count, division latency --- not by $n$ or $k$.  This is exactly what the
+entirely by hardware constant factors: cache-line width, SIMD lane
+count, division latency; not by $n$ or $k$.  This is exactly what the
 empirical block-size sweep finds (Section~\ref{sec:experiments}): the
 wall-clock-optimal $B$ on Zen~4 is $B = 32$, constant across the entire
 tested $(n,k)$ grid, with no detectable dependence on $k$ over the range
@@ -885,7 +912,7 @@ $V_2$ equities (see Appendix) and cross-checked between engines.
   \item \textbf{AMD Ryzen 9 7950X (Zen~4):} 16 homogeneous cores,
     AVX-512 (8 FP64/vector), 2 FMA units per core, 1\,MB per-core L2,
     32\,MB shared L3. FFT: AOCL-FFTW, znver4-tuned, sole backend (no
-    dual-library dispatch --- see Related Work).
+    dual-library dispatch; see Related Work).
 \end{itemize}
 
 \subsection{CPU Performance}
@@ -894,7 +921,7 @@ Tables~\ref{tab:serial} and~\ref{tab:parallel} report execution times
 across a grid of $(n, k)$ pairs. All M3~Pro numbers are from real
 measurements on the target hardware (bench\_grid, July 20, 2026); no
 numbers are estimated or borrowed. The best engine per cell is shown, with
-dispatch decisions made automatically by the roofline cost model.
+dispatch decisions made automatically by the empirical crossover table.
 
 \begin{table}[t]
 \centering
@@ -910,20 +937,20 @@ dispatch decisions made automatically by the roofline cost model.
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 1.71(L) & 7.07(L) & 13.1(L) & 23.3(H) & 45.9(H) & 46.0(H)
-      & 1.33(L) & 3.53(L) & 7.07(L) & 20.8(H) & 24.2(H) & 25.9(H) \\
-2048  & 4.07(L) & 14.2(L) & 26.2(L) & 94.6(H) & 97.1(H) & 103(H)
-      & 3.92(L) & 7.10(L) & 13.4(L) & 52.1(H) & 56.7(H) & 60.4(H) \\
-4096  & 8.13(L) & 28.2(L) & 52.4(L) & 201(H)  & 217(H)  & 238(H)
-      & 8.00(L) & 16.8(L) & 28.6(L) & 121(H)  & 133(H)  & 150(H) \\
-8192  & 16.2(L) & 56.5(L) & 105(L)  & 447(H)  & 516(H)  & 549(H)
-      & 16.2(L) & 28.8(L) & 49.6(L) & 285(H)  & 341(H)  & 353(H) \\
-16384 & 32.3(L) & 113(L)  & 209(L)  & 1070(H) & 1180(H) & 1260(H)
-      & 26.2(L) & 56.7(L) & 111(L)  & 730(H)  & 771(H)  & 843(H) \\
-32768 & 65.1(L) & 226(L)  & 418(L)  & 2450(H) & 2700(H) & 2890(H)
-      & 52.2(L) & 126(L)  & 236(L)  & 1640(H) & 1840(H) & 1970(H) \\
-65536 & 129(L)  & 450(L)  & 836(L)  & 5600(H) & 6240(H) & 7180(H)
-      & 116(L)  & 237(L)  & 475(L)  & 3890(H) & 4360(H) & 4610(H) \\
+1024  & 1.72(L) & 7.08(L) & 13.1(L) & 17.7(H) & 20.8(H) & 23.2(H)
+      & 1.44(L) & 4.04(L) & 7.90(L) & 15.7(H) & 16.7(H) & 17.6(H) \\
+2048  & 4.10(L) & 14.2(L) & 26.2(L) & 48.5(H) & 51.5(H) & 55.8(H)
+      & 3.21(L) & 6.87(L) & 13.7(L) & 36.2(H) & 38.6(H) & 40.9(H) \\
+4096  & 8.17(L) & 28.2(L) & 52.4(L) & 108(H)  & 122(H)  & 135(H)
+      & 6.58(L) & 14.1(L) & 29.3(L) & 83.4(H) & 92.5(H) & 93.6(H) \\
+8192  & 16.3(L) & 56.4(L) & 105(L)  & 255(H)  & 298(H)  & 319(H)
+      & 13.1(L) & 28.2(L) & 53.4(L) & 188(H)  & 203(H)  & 213(H) \\
+16384 & 32.4(L) & 113(L)  & 208(L)  & 632(H)  & 700(H)  & 749(H)
+      & 26.4(L) & 66.3(L) & 106(L)  & 433(H)  & 479(H)  & 508(H) \\
+32768 & 64.7(L) & 225(L)  & 417(L)  & 1470(H) & 1640(H) & 1750(H)
+      & 52.3(L) & 127(L)  & 228(L)  & 980(H)  & 1080(H) & 1230(H) \\
+65536 & 129(L)  & 451(L)  & 835(L)  & 3440(H) & 3820(H) & 4100(H)
+      & 115(L)  & 225(L)  & 414(L)  & 2580(H) & 2970(H) & 3330(H) \\
 \bottomrule
 \end{tabular}%
 }
@@ -932,7 +959,8 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 \begin{table}[t]
 \centering
 \caption{Parallel execution time (ms), $Q = 256$, uniform stacks.
-  M3 Pro: 12 threads (6P+6E). Zen 4: 16 threads.}
+  M3 Pro: 12 threads (6P+6E). Zen 4: 16 threads.
+  Best engine per cell: L = linear, H = hybrid, T = tree.}
 \label{tab:parallel}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{@{}l rrrrrr rrrrrr@{}}
@@ -943,18 +971,18 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 0.329 & 1.28  & 2.26  & 3.09  & 6.07  & 6.03
-      & 0.131 & 0.346 & 0.578 & 1.56  & 1.80  & 1.90 \\
-4096  & 1.38  & 4.85  & 8.84  & 27.4  & 29.2  & 31.5
-      & 0.607 & 1.48  & 2.34  & 8.85  & 9.81  & 10.9 \\
-8192  & 2.71  & 9.73  & 17.7  & 60.2  & 68.4  & 73.3
-      & 1.24  & 2.90  & 5.11  & 20.4  & 24.9  & 25.4 \\
-16384 & 5.29  & 19.5  & 35.3  & 142   & 158   & 168
-      & 3.14  & 5.82  & 9.85  & 64.0  & 60.2  & 78.1 \\
-32768 & 10.7  & 38.2  & 70.1  & 331   & 360   & 388
-      & 5.51  & 11.7  & 19.3  & 155   & 179   & 208 \\
-65536 & 21.2  & 78.8  & 139   & 752   & 852   & 993
-      & 19.6  & 29.2  & 52.3  & 408   & 450   & 551 \\
+1024  & 0.329(L) & 1.25(L)  & 2.06(H)  & 2.62(H)  & 2.83(H)  & 3.06(H)
+      & 0.130(L) & 0.354(L) & 0.567(L) & 1.13(H)  & 1.20(H)  & 1.31(H) \\
+4096  & 1.39(L)  & 4.78(L)  & 8.27(H)  & 14.6(H)  & 16.7(H)  & 18.0(H)
+      & 0.616(L) & 1.40(L)  & 2.41(L)  & 5.82(H)  & 6.46(H)  & 6.83(H) \\
+8192  & 2.70(L)  & 9.42(L)  & 17.2(H)  & 35.9(H)  & 41.3(H)  & 44.8(H)
+      & 1.23(L)  & 2.86(L)  & 4.99(L)  & 13.9(H)  & 15.5(H)  & 17.7(H) \\
+16384 & 5.33(L)  & 18.7(L)  & 34.7(H)  & 86.7(H)  & 99.5(H)  & 104(H)
+      & 2.53(L)  & 5.69(L)  & 9.36(L)  & 82.7(H)  & 113(H)   & 153(H) \\
+32768 & 10.7(L)  & 37.5(L)  & 67.2(L)  & 242(H)   & 235(H)   & 258(H)
+      & 5.70(L)  & 11.9(L)  & 20.9(L)  & 262(H)   & 307(H)   & 380(H) \\
+65536 & 21.2(L)  & 76.8(L)  & 138(L)   & 511(H)   & 576(H)   & 644(H)
+      & 19.3(L)  & 29.1(L)  & 45.7(L)  & 650(H)   & 782(H)   & 999(T) \\
 \bottomrule
 \end{tabular}%
 }
@@ -969,7 +997,7 @@ A direct A/B comparison of AOCL-FFTW versus the upstream (plain) FFTW
 distribution was conducted on the same Zen~4 machine, at the same FFT size
 ($d = 32{,}768$), with the same \texttt{FFTW\_PATIENT} flag, under the
 \texttt{performance} cpufreq governor. AOCL-FFTW completed the per-pipeline
-FFT work in 53--57\,$\mu$s versus 66--69\,$\mu$s for plain FFTW --- a
+FFT work in 53--57\,$\mu$s versus 66--69\,$\mu$s for plain FFTW; a
 20--25\% advantage, reproducible across repeated runs, with no calibrated
 size where the reverse held. AOCL-FFTW is therefore used as the sole FFT
 backend on Zen~4; no dual-library dispatch is needed on this platform
@@ -1122,7 +1150,8 @@ offline profiling. All bandwidth values are from streaming benchmarks on
 the target hardware, not copied from vendor specifications. $\tau_{\text{FMA}}$
 feeds the linear engine's $\bigO(nk)$ compute-bound cost estimate
 (Section~\ref{sec:linear}); $W_{L2}$, $W_{L3}$, and $W_{\text{DRAM}}$ feed
-the harmonic-mean bandwidth model of Equation~\ref{eq:harmonic}.
+the linear engine's L2-aware checkpointing logic and the (now-superseded)
+roofline dispatch model described in Section~\ref{sec:dispatch}.
 
 \begin{table}[t]
 \centering
@@ -1154,27 +1183,28 @@ the hundreds-of-TB/s range for $W_{L2}$), a pre-existing bug traced to
 does not depend on the outer repetition counter, so an optimizing compiler
 can prove the repeated stores are redundant and collapse the whole
 repetition loop to a single real pass, while the byte-count computation
-still charges for every nominal repetition --- inflating the reported
+still charges for every nominal repetition, inflating the reported
 bandwidth by approximately the repetition factor. Dividing each Zen~4
 value by its own repetition count gives 112, 34, and 32\,GB/s for
-$W_{L2}$, $W_{L3}$, and $W_{\text{DRAM}}$ respectively --- all physically
-plausible --- consistent with this exact mechanism. The same source does
+$W_{L2}$, $W_{L3}$, and $W_{\text{DRAM}}$ respectively; all physically
+plausible; consistent with this exact mechanism. The same source does
 not exhibit the bug when compiled for M3~Pro (its values were already
 sane), consistent with a GCC/x86 optimization difference rather than a
 flaw in the benchmark's logic. Fixed with a standard compiler barrier
 after each repetition; verified not to regress M3~Pro's already-correct
 values. \textbf{Not yet re-verified with a fresh calibration run on Zen~4
-hardware} --- the calibration machine became unreachable before the fix
+hardware}; the calibration machine became unreachable before the fix
 was written, so the corrected values above are a well-evidenced
 prediction, not a fresh measurement. These constants feed the linear
-engine's roofline dispatch cost, not correctness ---
+engine's L2-aware checkpointing cost, not correctness;
 \texttt{bench\_grid verify} is unaffected regardless.
 
 \subsection{Calibration Methodology: Direct Measurement vs.\ Indirect Regression}\label{sec:calib-methodology}
 
-The dispatch cost model (Section~\ref{sec:dispatch}) depends on hardware
-constants --- $\tau_{\text{FMA}}$, cache bandwidths, per-size FFT costs,
-and several micro-architectural parameters --- that are fit to timing data
+The empirical crossover table (Section~\ref{sec:dispatch}) replaced an
+earlier roofline cost model that depended on hardware
+constants: $\tau_{\text{FMA}}$, cache bandwidths, per-size FFT costs,
+and several micro-architectural parameters; that are fit to timing data
 by nonlinear least squares. Two of these constants proved structurally
 unrecoverable from aggregate plan-timing data alone, leading to a
 methodological shift from indirect regression to isolated direct
@@ -1186,9 +1216,9 @@ The principle of measuring a parameter directly rather than backing it out
 of aggregate data has strong precedent in high-performance computing.
 FFTW's \texttt{PATIENT}-mode planner measures the actual execution time of
 candidate FFT plans directly rather than relying on an indirect cost
-model~\citep{frigo2005}. The ATLAS project's AEOS (Automated Empirical
-Optimization of Software) system empirically times generated kernel
-variants per architecture to select the fastest~\citep{whaley1998}. The
+model~\citep{frigo2005}. The BeBOP/Sparsity system's register-blocking search empirically times
+generated kernel variants per architecture to select the
+fastest~\citep{demmel2004}. The
 roofline model measures peak FLOP/s and memory bandwidth via dedicated
 streaming microbenchmarks rather than inferring them from application
 runs~\citep{williams2009}. In each case, the rationale is the same: when a
@@ -1203,7 +1233,7 @@ parameter is identifiable from training data only if the input signal
 varies its effect enough to be distinguishable from noise and from the
 effects of other parameters. When one parameter's contribution never
 exceeds a few percent of any training example's total cost (as is the case
-for wrap-correction cost in the tree engine --- see below), the regression
+for wrap-correction cost in the tree engine; see below), the regression
 objective is effectively flat with respect to that parameter: wildly
 different values produce nearly identical aggregate predictions, and the
 fitted value reflects optimizer drift rather than physical reality.
@@ -1252,8 +1282,8 @@ ${\sim}0.36$--$0.45$\,ns/FMA.
 \end{figure}
 
 \paragraph{Disclosure: point-estimate approximation.}
-The shipped $\texttt{WRAP\_FMA\_NS}$ values --- $0.40$ on Zen~4 and
-$0.4942$ on Apple M3~Pro --- are representative point estimates from a
+The shipped $\texttt{WRAP\_FMA\_NS}$ values, $0.40$ on Zen~4 and
+$0.4942$ on Apple M3~Pro, are representative point estimates from a
 hand-chosen operating-range window ($\texttt{wrap\_m} \in [64, 384]$),
 not a fully piecewise or continuous model of the cache-hierarchy
 transition visible in Figure~\ref{fig:wrap-curve}. The dispatch model
@@ -1265,7 +1295,7 @@ the single-constant approximation has proved sufficient in practice
 \paragraph{M3 Pro: a second identifiability failure.}
 The same methodology was applied to $\texttt{FP64\_DIV\_NS}$ on the Apple
 M3~Pro after the indirect fit converged to a physically implausible value
-(0.5\,ns, at its imposed lower bound --- FP64 division latency on Apple
+(0.5\,ns, at its imposed lower bound; FP64 division latency on Apple
 Silicon is expected to be 13--16 cycles, or ${\sim}3.2$--$4.0$\,ns at
 4.05\,GHz). A second dedicated microbenchmark
 (\texttt{tools/bench\_div\_chain.c}) measured the dependency-chained
@@ -1281,7 +1311,7 @@ $\texttt{FFT\_OVERHEAD\_NS}$ to a physically odd 631\,ns (and
 $\tau_{\text{FMA}}$ to its fit lower bound) to compensate. The current
 \texttt{sample\_plans} training data does not cleanly separate the
 division constant's effect from the schoolbook-multiplication constant's
-on this hardware --- a collinearity limitation in the training dataset,
+on this hardware; a collinearity limitation in the training dataset,
 not a correctness issue. The dispatch decisions remain sound:
 \texttt{bench\_grid verify} passes all tests and
 \texttt{bench\_grid crossover} shows a clean, monotonic linear-to-hybrid
@@ -1354,7 +1384,7 @@ tiers based on polynomial degree:
     for the highest-throughput regime.
 \end{itemize}
 
-The entire multi-level execution sequence --- spanning dozens of kernel launches
+The entire multi-level execution sequence, spanning dozens of kernel launches
 across all three tiers - is captured into a single CUDA Graph and replayed
 with ${\sim}2.5\,\mu$s total launch overhead.
 
@@ -1470,13 +1500,14 @@ equities using generating-function quadrature and FFT-accelerated
 subproduct trees. The algorithm achieves $\bigO(Qn\log^2 k)$ time, double-precision accuracy via $Q = 256$ quadrature points (relative error
 ${<}\,5 \times 10^{-12}$ on typical inputs), and automatically dispatches
 between a linear engine (optimal for small $k$) and a hybrid block-tree
-engine (optimal for large $k$) using a calibrated roofline cost model.
+engine (optimal for large $k$) using an empirically calibrated crossover
+table (Section~\ref{sec:dispatch}).
 
 The propagation phase is precisely the reverse-mode derivative of the
 build phase, and recognizing this gives both a clean correctness proof
 (Theorem~\ref{thm:tree-correct}) and complexity parity between build and
 propagation for free. The dominant cost throughout is data movement, not
-arithmetic: the roofline dispatch model, L2-aware checkpointing, and the
+arithmetic: the empirical dispatch table, L2-aware checkpointing, and the
 GPU's FFT-stride layout all exist because moving data between cache levels
 is the binding constraint, not the FMA count. And the cost model and FFT
 dispatch decisions throughout - per-size FFT timing, per-level cache
