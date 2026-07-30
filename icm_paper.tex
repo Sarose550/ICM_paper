@@ -1012,14 +1012,20 @@ integration of NEON SIMD throughout the linear engine's batched path
 ($B_Q = 8$ quadrature points interleaved).
 
 \paragraph{Parallel scaling asymmetry.}
-The two engines exhibit markedly different parallel scaling behavior. The
-linear engine achieves $7$--$8\times$ speedup on 16 Zen~4 cores, while the
-hybrid engine achieves only $3.6$--$4.2\times$. The explanation is memory
-hierarchy: the linear engine's L2-aware checkpointing ensures each thread's
-working set fits in its private per-core L2 cache (aggregate $16 \times
-119 \approx 1{,}900$\,GB/s), while the hybrid engine's FFT-dominated tree
-traversal operates on polynomials far exceeding L2 capacity, forcing all
-16 threads to compete for the shared DRAM bus.
+The two engines scale differently on 16 Zen~4 cores. Restricted to
+$(n,k)$ cells where the same engine wins in both the serial and parallel
+grids (isolating the scaling effect from a shifting engine choice), the
+linear engine's median parallel speedup is $9.7\times$ on the 2DPC
+reference box and $9.8\times$ on 1DPC, while the hybrid engine's is
+$13.1\times$ and $12.6\times$ respectively -- hybrid scales somewhat
+better than linear across the range measured, the opposite of what a
+comparison restricted to $n = 65{,}536$ alone would suggest (linear's
+worst case there is $3.6$--$4.2\times$ against hybrid's typical case).
+The per-core L2 capacity argument for the linear engine's checkpointing
+still holds (Zen~4: $16 \times 131.5 \approx 2{,}104$\,GB/s aggregate
+streaming bandwidth if every thread stayed L2-resident, Table~\ref{tab:constants}),
+but does not by itself explain the magnitude gap between the two
+engines; identifying the mechanism is open follow-up work.
 
 This asymmetry creates a sharp cliff at the linear-to-hybrid transition,
 which on Zen~4 falls between $k = 100$ and $k = 200$: the parallel linear
@@ -1287,21 +1293,23 @@ division cost directly (matching the actual usage in the hybrid engine's
 leaf-extraction synthetic-division recurrence, Section~\ref{sec:hybrid}),
 yielding $3.4890$\,ns.
 
-\paragraph{Collinearity caveat (disclosed, not hidden).}
-Pinning both $\texttt{WRAP\_FMA\_NS}$ and $\texttt{FP64\_DIV\_NS}$ to
-their directly-measured values on M3~Pro raised the aggregate fit's RMS
-log-relative error from 6.57\% to 10.2\% and pushed
-$\texttt{FFT\_OVERHEAD\_NS}$ to a physically odd 631\,ns (and
-$\tau_{\text{FMA}}$ to its fit lower bound) to compensate. The current
-\texttt{sample\_plans} training data does not cleanly separate the
-division constant's effect from the schoolbook-multiplication constant's
-on this hardware; a collinearity limitation in the training dataset,
-not a correctness issue. The dispatch decisions remain sound:
-\texttt{bench\_grid verify} passes all tests and
-\texttt{bench\_grid crossover} shows a clean, monotonic linear-to-hybrid
-transition at $k \approx 122$--$124$ on M3~Pro and $k \approx 249$--$281$ on Zen~4. Improving the
-\texttt{sample\_plans} coverage to break this collinearity is open
-follow-up work.
+\paragraph{Collinearity caveat (resolved).}
+An earlier revision of this calibration pinned only
+$\texttt{WRAP\_FMA\_NS}$ and $\texttt{FP64\_DIV\_NS}$ directly, leaving the
+remaining cost-model constants to a nonlinear-least-squares fit. That fit
+raised the aggregate RMS log-relative error from 6.57\% to 10.2\% on
+M3~Pro and pushed $\texttt{FFT\_OVERHEAD\_NS}$ to a physically odd
+631\,ns to compensate, a collinearity artifact of the
+\texttt{sample\_plans} training data, not a correctness issue.
+\textbf{This limitation no longer applies.} All six scalar constants are
+now pinned directly from microbenchmarks; \texttt{tools/fit\_cost\_model.py}
+skips the regression entirely once every scalar is supplied, and
+$\texttt{FFT\_OVERHEAD\_NS}$ is $0.0$ on every device. The identifiability
+failure recorded here is what motivated that migration, not a standing
+limitation of anything shipped. \texttt{bench\_grid verify} passes all
+tests and \texttt{bench\_grid crossover} shows a clean, monotonic
+linear-to-hybrid transition at $k \approx 122$--$124$ on M3~Pro and
+$k \approx 249$--$281$ on Zen~4.
 
 \subsection{Subset Equity Pruning}\label{sec:subset}
 
@@ -1341,10 +1349,13 @@ $n$ & Speedup @1\% targets & Speedup @5--10\% targets & Speedup @$\ge$25\% targe
 % ======================================================================
 
 The GPU implementation targets the NVIDIA B200 and adapts the hybrid
-block-tree algorithm to the GPU execution model. The linear engine is not
-applicable: its sequential player-by-player structure cannot saturate GPU
-parallelism. Only the tree-based engines, where all nodes at each level are
-independent, map naturally to GPU execution.
+block-tree algorithm to the GPU execution model. The linear engine is
+retained in the dispatch code only as a trivial-case fallback ($n < 16$ or
+$k_{\text{pad}} < 4$); its sequential player-by-player structure cannot
+saturate GPU parallelism at any size that matters in practice, and it is
+never selected across the full calibrated heatmap (210/210 cells choose
+hybrid). Only the tree-based engines, where all nodes at each level are
+independent, map naturally to GPU execution at scale.
 
 \subsection{Architecture}
 
