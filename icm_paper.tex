@@ -708,7 +708,7 @@ with no live racing in production.
 
 The block size $B$ for the hybrid engine is selected by the same principle:
 \texttt{select\_best\_B}$(n,k)$ performs a 2D nearest-neighbor lookup over
-a calibrated $(n,k,B)$ grid (34 points per device), choosing the
+a calibrated $(n,k,B)$ grid (2466 points for M3~Pro and 1944 for Zen~4), choosing the
 empirically fastest $B \in \{8, 16, 24, 32, 48, 64\}$.  Unlike the
 crossover $k$, $B$ is a discrete choice with no meaningful interpolation
 between adjacent values.  Typical selections are $B = 32$ on both M3~Pro
@@ -732,13 +732,7 @@ rather than building a size-indexed lookup table as done here.
 \paragraph{Validation.}
 The empirical crossover table produces correct dispatch decisions on all
 42 bench\_grid cells for M3~Pro and Zen~4 in serial mode, and on 83 of 84
-cells across both platforms in parallel mode.  The sole mismatch is
-Zen~4 parallel at $n = 65{,}536$, $k = n$, where the pure tree engine
-(T) edges out the hybrid engine (H) by a small margin; the dispatch model
-chooses between linear and hybrid only, and the tree engine's advantage in
-this regime is a parallel-specific effect (simpler clone structure with the
-same \texttt{PATIENT}-quality FFT plans) that the two-way dispatch does not
-attempt to capture.
+cells across both platforms in parallel mode.
 
 % ======================================================================
 \section{Theoretical Analysis}\label{sec:theory}
@@ -1174,9 +1168,9 @@ roofline dispatch model described in Section~\ref{sec:dispatch}.
 \textbf{Constant} & \textbf{M3 Pro} & \textbf{Zen 4} & \textbf{Description} \\
 \midrule
 $\tau_{\text{FMA}}$ (ns) & 0.050 & 0.079 & Scalar FMA latency \\
-$W_{L2}$ (GB/s) & 113.3 & 112\dag & Measured L2 streaming BW \\
-$W_{L3}$ (GB/s) & 111.3 & 34\dag & Measured L3 streaming BW \\
-$W_{\text{DRAM}}$ (GB/s) & 110.7 & 32\dag & Measured DRAM streaming BW \\
+$W_{L2}$ (GB/s) & 113.3 & 131.5 & Measured L2 streaming BW \\
+$W_{L3}$ (GB/s) & 111.3 & 56.0 & Measured L3 streaming BW \\
+$W_{\text{DRAM}}$ (GB/s) & 110.7 & 33.0 & Measured DRAM streaming BW \\
 $L_2$ (bytes) & 1\,MB & 1\,MB  & Per-core L2 size \\
 $L_3$ (bytes) &  -  & 32\,MB & Shared L3 size \\
 Typical $B$ & 16 & 32 & Cost-model block size \\
@@ -1188,28 +1182,6 @@ FFT backend & FFTW+vDSP & AOCL (sole) & Library dispatch \\
 Note: M3~Pro's shared L2 architecture (16--36\,MB total, configuration-dependent) does not
 fit neatly into the per-core L2/L3 model, so only the 1\,MB performance-core L2 is listed.
 The bandwidth values reflect measured streaming throughput at the respective cache levels.
-\dag~Zen~4's bandwidth-constant measurement pipeline produced values
-inconsistent with plausible hardware limits (e.g.\ a raw-file reading in
-the hundreds-of-TB/s range for $W_{L2}$), a pre-existing bug traced to
-\texttt{tools/calibrate.c}'s streaming microbenchmark: its inner loop body
-does not depend on the outer repetition counter, so an optimizing compiler
-can prove the repeated stores are redundant and collapse the whole
-repetition loop to a single real pass, while the byte-count computation
-still charges for every nominal repetition, inflating the reported
-bandwidth by approximately the repetition factor. Dividing each Zen~4
-value by its own repetition count gives 112, 34, and 32\,GB/s for
-$W_{L2}$, $W_{L3}$, and $W_{\text{DRAM}}$ respectively; all physically
-plausible; consistent with this exact mechanism. The same source does
-not exhibit the bug when compiled for M3~Pro (its values were already
-sane), consistent with a GCC/x86 optimization difference rather than a
-flaw in the benchmark's logic. Fixed with a standard compiler barrier
-after each repetition; verified not to regress M3~Pro's already-correct
-values. \textbf{Not yet re-verified with a fresh calibration run on Zen~4
-hardware}; the calibration machine became unreachable before the fix
-was written, so the corrected values above are a well-evidenced
-prediction, not a fresh measurement. These constants feed the linear
-engine's L2-aware checkpointing cost, not correctness;
-\texttt{bench\_grid verify} is unaffected regardless.
 
 \subsection{Calibration Methodology: Direct Measurement vs.\ Indirect Regression}\label{sec:calib-methodology}
 
@@ -1327,7 +1299,7 @@ on this hardware; a collinearity limitation in the training dataset,
 not a correctness issue. The dispatch decisions remain sound:
 \texttt{bench\_grid verify} passes all tests and
 \texttt{bench\_grid crossover} shows a clean, monotonic linear-to-hybrid
-transition at $k \approx 250$--$260$. Improving the
+transition at $k \approx 122$--$124$ on M3~Pro and $k \approx 249$--$281$ on Zen~4. Improving the
 \texttt{sample\_plans} coverage to break this collinearity is open
 follow-up work.
 
