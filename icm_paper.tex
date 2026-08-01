@@ -105,10 +105,9 @@ My contributions are:
     computation, with correctness proved via the adjoint relationship
     between convolution and cross-correlation (Section~\ref{sec:algorithm}).
   \item An empirical crossover table, calibrated offline via direct
-    timing on the target hardware, that achieves 100\% correct engine
-    dispatch on all serial bench\_grid cells and 83/84 on parallel
-    cells across both platforms, replacing earlier analytical cost
-    models (Section~\ref{sec:dispatch}).
+    timing on the target hardware, verified to select the correct
+    engine on every tested $(n,k)$ cell in serial mode on M3~Pro,
+    replacing earlier analytical cost models (Section~\ref{sec:dispatch}).
   \item Platform-specific implementations for ARM64 (Apple M3~Pro),
     x86-64 (AMD Zen~4 with AOCL-FFTW), and CUDA (NVIDIA B200 GPU),
     demonstrating the approach at scale (Sections~\ref{sec:experiments},
@@ -401,7 +400,7 @@ pass saves checkpoints every $C = \lfloor L_2 / (k \cdot B_Q \cdot 8)
 checkpoint before extracting equities, trading $\bigO(n/C)$ recomputation
 passes for $\bigO(C \cdot k)$ memory. This is critical not only for the
 serial engine but also for the parallel (OpenMP) path, where omitting it
-caused a 13.5$\times$ regression by forcing DRAM bandwidth instead of L2.
+forces DRAM bandwidth instead of L2 and causes a severe regression.
 
 \subsection{Engine 2: FFT-Accelerated Subproduct Tree}\label{sec:tree}
 
@@ -658,25 +657,21 @@ adversarial near-$a_j = 0.5$ regime the lemma flags as riskiest. All
 tests passed with no error growth across the entire range (standard:
 $\max\ 1.18 \times 10^{-12}$ vs.\ $5 \times 10^{-12}$ tolerance;
 adversarial: $\max\ 1.54 \times 10^{-10}$ vs.\ $10^{-9}$ tolerance).
-Separately, an exhaustive block-size sweep across 95~$(n,k)$ cells on the
-same hardware found that $B = 32$ is empirically the fastest choice
-regardless of $k$ or $n$, and $B > 64$ is never faster (mean penalty
-$2.45\times$ at $B = 256$). The production candidate list
+Separately, an exhaustive block-size sweep on the same hardware found
+that $B = 32$ is typically the fastest choice, and larger $B$ values are
+never faster. The production candidate list
 $\{8, 16, 24, 32, 48, 64\}$ therefore caps at $64$ for performance
 reasons, not because of a hard correctness wall.
 
 \paragraph{Rejected CPU optimizations.} Several plausible optimizations
 were tried on the CPU engines and rejected after benchmarking. Karatsuba
-multiplication for the block build was 1.5$\times$ \emph{slower} at every
-block size tested: on FMA-capable hardware, schoolbook's
-\texttt{c[i+j] += a[i]*b[j]} is already one FMA per term, so Karatsuba's
-trade of multiplies for additions saves nothing - both cost one cycle.
-FFTW's NEON codelets for FP64 were 3.4$\times$ slower than Apple's vDSP on
-Apple Silicon, which is why vDSP is dispatched for FFT execution instead
-of FFTW at supported sizes on that platform (Section~\ref{sec:experiments});
-however, using vDSP directly inside the batched linear engine's inner
-loops (rather than only for FFT calls) was itself 2$\times$ \emph{slower},
-since per-call overhead at small $k$ exceeds any vectorization benefit.
+multiplication for the block build was consistently slower: on FMA-capable
+hardware, schoolbook's \texttt{c[i+j] += a[i]*b[j]} is already one FMA per
+term, so Karatsuba's trade of multiplies for additions saves nothing - both
+cost one cycle. FFTW's NEON codelets for FP64 were slower than Apple's
+vDSP on Apple Silicon, which is why vDSP is dispatched for FFT execution
+instead of FFTW at supported sizes on that platform
+(Section~\ref{sec:experiments}).
 
 \subsection{Engine Dispatch: Empirical Lookup Table}\label{sec:dispatch}
 
@@ -702,9 +697,9 @@ the two bracketing $n$ values in the \texttt{crossover\_n[]} table to
 obtain the crossover $k$ for the requested $n$, then dispatches to linear
 if $k$ is below the crossover and hybrid otherwise.  This is the same
 structural precedent as LAPACK's \texttt{ILAENV} \texttt{ISPEC=3} (the
-\texttt{NX} parameter): a problem-size crossover between two algorithms,
-measured empirically per machine, consulted as a cheap runtime threshold
-with no live racing in production.
+\texttt{NX} parameter)~\citep{anderson1999}: a problem-size crossover
+between two algorithms, measured empirically per machine, consulted as a
+cheap runtime threshold with no live racing in production.
 
 The block size $B$ for the hybrid engine is selected by the same principle:
 \texttt{select\_best\_B}$(n,k)$ performs a 2D nearest-neighbor lookup over
@@ -730,9 +725,16 @@ register-blocking/unrolling parameters for one fixed small kernel size
 rather than building a size-indexed lookup table as done here.
 
 \paragraph{Validation.}
-The empirical crossover table produces correct dispatch decisions on all
-42 bench\_grid cells for M3~Pro and Zen~4 in serial mode, and on 83 of 84
-cells across both platforms in parallel mode.
+\texttt{tools/validate\_dispatch.c} directly compares
+\texttt{select\_engine}$(n,k)$'s choice against the true faster engine
+(measured head to head, adaptive median-of-$N$ convergence) over the same
+$(n,k)$ grid as Table~\ref{tab:serial} -- 7 values of $n$ from $1{,}024$
+to $65{,}536$ crossed with $k \in \{10, 50, 100, n/4, n/2, n\}$, 42 cells.
+On M3~Pro, serial mode, dispatch was correct on all 40 cells completed in
+this evaluation run (the two largest, $n=65{,}536$ at $k=n/2$ and $k=n$,
+were not measured due to a runtime constraint in this environment, not a
+dispatch failure); the surrounding cells at that same $n$, including
+$k=n/4$, were all correct.
 
 % ======================================================================
 \section{Theoretical Analysis}\label{sec:theory}
@@ -939,19 +941,19 @@ dispatch decisions made automatically by the empirical crossover table.
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 1.79(L) & 7.28(L) & 12.8(L) & 18.4(H) & 22.2(H) & 24.0(H)
+1024  & 1.72(L) & 7.07(L) & 13.0(L) & 17.9(H) & 21.0(H) & 28.6(H)
       & 1.46(L) & 3.48(L) & 7.32(L) & 19.1(H) & 22.3(H) & 24.1(H) \\
-2048  & 4.01(L) & 14.1(L) & 26.2(L) & 47.9(H) & 54.8(H) & 57.3(H)
+2048  & 4.10(L) & 14.1(L) & 26.1(L) & 44.4(H) & 51.8(H) & 56.3(H)
       & 3.67(L) & 8.21(L) & 15.0(L) & 48.4(H) & 53.7(H) & 57.2(H) \\
-4096  & 8.10(L) & 28.2(L) & 52.4(L) & 115(H)  & 135(H)  & 155(T)
+4096  & 8.13(L) & 28.3(L) & 52.0(L) & 108(H)  & 123(H)  & 141(H)
       & 7.39(L) & 17.8(L) & 25.8(L) & 115(H)  & 128(H)  & 139(H) \\
-8192  & 16.1(L) & 56.4(L) & 104(L)  & 273(H)  & 325(H)  & 359(T)
+8192  & 16.3(L) & 59.7(L) & 104(L)  & 291(H)  & 374(T)  & 407(T)
       & 13.4(L) & 34.3(L) & 53.6(L) & 277(H)  & 315(H)  & 341(H) \\
-16384 & 32.3(L) & 113(L)  & 210(L)  & 650(H)  & 725(H)  & 778(H)
+16384 & 32.4(L) & 113(L)  & 208(L)  & 784(T)  & 788(H)  & 967(T)
       & 29.6(L) & 56.9(L) & 117(L)  & 667(H)  & 743(H)  & 810(H) \\
-32768 & 65.0(L) & 227(L)  & 420(L)  & 1590(H) & 1800(H) & 1970(T)
+32768 & 64.9(L) & 226(L)  & 416(L)  & 1670(H) & 1920(H) & 2100(H)
       & 62.3(L) & 131(L)  & 218(L)  & 1570(H) & 1790(H) & 1950(H) \\
-65536 & 131(L)  & 456(L)  & 842(L)  & 3460(H) & 3880(H) & 4120(H)
+65536 & 130(L)  & 452(L)  & 831(L)  & 4030(H) & 4670(H) & 5610(H)
       & 118(L)  & 266(L)  & 411(L)  & 4110(H) & 4750(H) & 5110(H) \\
 \bottomrule
 \end{tabular}%
@@ -973,17 +975,17 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 0.329(L) & 1.23(L)  & 2.19(H)  & 2.64(H)  & 2.99(H)  & 3.27(H)
+1024  & 0.325(L) & 1.28(L)  & 2.07(H)  & 2.42(H)  & 2.82(H)  & 3.81(H)
       & 0.121(L) & 0.359(L) & 1.21(L)  & 1.41(H)  & 1.66(H)  & 1.78(H) \\
-4096  & 1.36(L)  & 4.79(L)  & 8.11(H)  & 16.1(H)  & 18.5(H)  & 21.5(H)
+4096  & 1.40(L)  & 4.90(L)  & 8.82(L)  & 14.8(H)  & 16.6(H)  & 18.9(H)
       & 0.651(L) & 1.48(L)  & 2.35(L)  & 8.40(H)  & 9.36(H)  & 10.1(H) \\
-8192  & 2.67(L)  & 9.44(L)  & 16.4(H)  & 37.9(H)  & 46.9(H)  & 50.4(T)
+8192  & 2.71(L)  & 9.63(L)  & 16.8(H)  & 39.8(H)  & 50.6(T)  & 55.0(T)
       & 1.23(L)  & 2.84(L)  & 4.63(L)  & 20.4(H)  & 24.2(H)  & 28.1(H) \\
-16384 & 5.40(L)  & 18.7(L)  & 35.1(L)  & 91.9(H)  & 101(H)   & 111(H)
+16384 & 5.40(L)  & 18.9(L)  & 33.9(H)  & 108(T)   & 108(H)   & 135(T)
       & 2.37(L)  & 6.43(L)  & 9.69(L)  & 88.1(H)  & 112(H)   & 142(H) \\
-32768 & 10.7(L)  & 37.9(L)  & 67.7(H)  & 229(H)   & 265(H)   & 296(T)
+32768 & 10.7(L)  & 37.8(L)  & 68.1(L)  & 231(H)   & 265(H)   & 295(H)
       & 6.04(L)  & 13.6(L)  & 23.6(L)  & 280(H)   & 314(H)   & 363(H) \\
-65536 & 21.6(L)  & 77.4(L)  & 142(L)   & 515(H)   & 583(H)   & 649(H)
+65536 & 21.1(L)  & 78.9(L)  & 140(H)   & 584(H)   & 682(H)   & 811(H)
       & 21.0(L)  & 30.4(L)  & 48.4(L)  & 627(H)   & 729(H)   & 901(H) \\
 \bottomrule
 \end{tabular}%
@@ -999,9 +1001,8 @@ A direct A/B comparison of AOCL-FFTW versus the upstream (plain) FFTW
 distribution was conducted on the same Zen~4 machine, at the same FFT size
 ($d = 32{,}768$), with the same \texttt{FFTW\_PATIENT} flag, under the
 \texttt{performance} cpufreq governor. AOCL-FFTW completed the per-pipeline
-FFT work in 53--57\,$\mu$s versus 66--69\,$\mu$s for plain FFTW; a
-20--25\% advantage, reproducible across repeated runs, with no calibrated
-size where the reverse held. AOCL-FFTW is therefore used as the sole FFT
+FFT work with a 20--25\% advantage over plain FFTW, reproducible across
+repeated runs, with no calibrated size where the reverse held. AOCL-FFTW is therefore used as the sole FFT
 backend on Zen~4; no dual-library dispatch is needed on this platform
 (contrast the GPU's cuFFT/cuFFTDx tier selection, Section~\ref{sec:gpu-results},
 where dispatch genuinely depends on problem size).
@@ -1012,15 +1013,24 @@ integration of NEON SIMD throughout the linear engine's batched path
 ($B_Q = 8$ quadrature points interleaved).
 
 \paragraph{Parallel scaling asymmetry.}
-The two engines scale differently on 16 Zen~4 cores. Restricted to
+The two engines scale differently on 16 Zen~4 cores. The reference box was
+redeployed 2026-07-27 in a 2-DIMMs-per-channel (\emph{2DPC}) configuration,
+an AMD AM5 electrical limit that caps RAM at 3600\,MT/s against a higher
+DIMM rating; the earlier \emph{1DPC} configuration ran at full rated
+bandwidth. This is kept as two datasets rather than one, because the
+effect is not a flat percentage: linear/schoolbook timings are nearly
+unchanged between the two ($\sim$0.97--1.0$\times$) while hybrid/FFT
+timings are 40--65\% slower under 2DPC at large $k$. Figure~\ref{fig:1dpc-2dpc}
+shows the two eras' one-second contours side by side. Restricted to
 $(n,k)$ cells where the same engine wins in both the serial and parallel
 grids (isolating the scaling effect from a shifting engine choice), the
 linear engine's median parallel speedup is $9.7\times$ on the 2DPC
 reference box and $9.8\times$ on 1DPC, while the hybrid engine's is
 $13.1\times$ and $12.6\times$ respectively -- hybrid scales somewhat
-better than linear across the range measured, the opposite of what a
-comparison restricted to $n = 65{,}536$ alone would suggest (linear's
-worst case there is $3.6$--$4.2\times$ against hybrid's typical case).
+better than linear across the range measured. This is not uniform across
+$n$: at $n = 65{,}536$ specifically (2DPC), linear's speedup ranges
+$5.6$--$8.75\times$ and hybrid's $5.67$--$6.56\times$, comparable to each
+other rather than showing the gap the medians suggest.
 The per-core L2 capacity argument for the linear engine's checkpointing
 still holds (Zen~4: $16 \times 131.5 \approx 2{,}104$\,GB/s aggregate
 streaming bandwidth if every thread stayed L2-resident, Table~\ref{tab:constants}),
@@ -1036,6 +1046,18 @@ algorithmic deficiency. The serial contour shows the same transition at the
 same $k$ and in the same direction (117{,}264 at $k = 100$ falling to
 45{,}085 at $k = 200$), but a shallower $2.6\times$ drop, since a single
 thread does not saturate the DRAM bus.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.6\textwidth]{../ICM/results/zen4_1dpc_vs_2dpc.png}
+  \caption{Zen~4 one-second contour, 1DPC (full memory bandwidth) vs.\ 2DPC
+    (the standing reference configuration, 3600\,MT/s ceiling), serial,
+    $Q = 256$. The two curves diverge at large $k$, where the hybrid
+    engine's FFT phase is bandwidth-bound; they nearly coincide at small
+    $k$, where the linear engine dominates and is largely
+    bandwidth-insensitive.}
+  \label{fig:1dpc-2dpc}
+\end{figure}
 
 \begin{figure}[t]
   \centering
@@ -1157,37 +1179,39 @@ average-case precision.
 
 \subsection{Calibration Constants}
 
-Table~\ref{tab:constants} summarizes the hardware constants measured via
-offline profiling. All bandwidth values are from streaming benchmarks on
-the target hardware, not copied from vendor specifications. $\tau_{\text{FMA}}$
-feeds the linear engine's $\bigO(nk)$ compute-bound cost estimate
-(Section~\ref{sec:linear}); $W_{L2}$, $W_{L3}$, and $W_{\text{DRAM}}$ feed
-the linear engine's L2-aware checkpointing logic and the (now-superseded)
-roofline dispatch model described in Section~\ref{sec:dispatch}.
+Table~\ref{tab:constants} summarizes the constants that actually drive the
+shipped dispatch and cost logic, all measured by direct microbenchmark or
+offline profiling rather than fit by regression (Section~\ref{sec:calib-methodology}).
+$\texttt{WRAP\_FMA\_NS}$ prices the tree engine's closed-form wrap-correction
+cost; $\texttt{PAIRED\_CACHED\_CORR\_RATIO}$ and $\texttt{INDEP\_PAIR\_RATIO}$
+scale measured FFT time to price the paired- and independent-correlate
+phases; $L_2$ sizes the linear engine's checkpointing interval
+(Section~\ref{sec:linear}); and the B-selection table size is the number
+of empirically measured $(n,k,B)$ points behind
+\texttt{select\_best\_B}$(n,k)$ (Section~\ref{sec:dispatch}). An earlier
+roofline cost model built from streaming-bandwidth constants
+($\tau_{\text{FMA}}$, $W_{L2}$, $W_{L3}$, $W_{\text{DRAM}}$) was replaced
+by this direct-measurement approach and is no longer part of the shipped
+library (Section~\ref{sec:calib-methodology}).
 
 \begin{table}[t]
 \centering
-\caption{Platform calibration constants.}
+\caption{Platform calibration constants live in \texttt{libicm.a}'s dispatch path.}
 \label{tab:constants}
 \begin{tabular}{@{}lrrl@{}}
 \toprule
 \textbf{Constant} & \textbf{M3 Pro} & \textbf{Zen 4} & \textbf{Description} \\
 \midrule
-$\tau_{\text{FMA}}$ (ns) & 0.050 & 0.079 & Scalar FMA latency \\
-$W_{L2}$ (GB/s) & 113.3 & 131.5 & Measured L2 streaming BW \\
-$W_{L3}$ (GB/s) & 111.3 & 56.0 & Measured L3 streaming BW \\
-$W_{\text{DRAM}}$ (GB/s) & 110.7 & 33.0 & Measured DRAM streaming BW \\
-$L_2$ (bytes) & 1\,MB & 1\,MB  & Per-core L2 size \\
-$L_3$ (bytes) &  -  & 32\,MB & Shared L3 size \\
-Typical $B$ & 16 & 32 & Cost-model block size \\
+$\texttt{WRAP\_FMA\_NS}$ (ns) & 0.516 & 0.436 & Wrap-correction FMA cost \\
+$\texttt{PAIRED\_CACHED\_CORR\_RATIO}$ & 1.560 & 1.547 & Paired cached correlate / full pipeline \\
+$\texttt{INDEP\_PAIR\_RATIO}$ & 2.440 & 2.440 & \texttt{correlate\_fft\_pair} / full pipeline \\
+$L_2$ (bytes) & 1\,MB & 1\,MB & Per-core L2, sizes checkpointing \\
+B-selection table & 2{,}563 pts & 1{,}944 pts & Empirical $(n,k,B)$ lookup size \\
+Typical $B$ & 32 & 32 & Most common empirical block size \\
 FFT backend & FFTW+vDSP & AOCL (sole) & Library dispatch \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-Note: M3~Pro's shared L2 architecture (16--36\,MB total, configuration-dependent) does not
-fit neatly into the per-core L2/L3 model, so only the 1\,MB performance-core L2 is listed.
-The bandwidth values reflect measured streaming throughput at the respective cache levels.
 
 \subsection{Calibration Methodology: Direct Measurement vs.\ Indirect Regression}\label{sec:calib-methodology}
 
@@ -1237,9 +1261,8 @@ $\texttt{WRAP\_FMA\_NS}$ (nanoseconds per fused multiply-add in the
 correction loop), is a small fraction of any sampled plan's total
 predicted time. On AMD Zen~4, only 5 of 200 sampled plans had
 wrap-correction cost exceeding 1\% of that plan's total predicted time
-(maximum 1.5\%). The nonlinear least-squares fit's objective was flat
-across a factor of 4 in $\texttt{WRAP\_FMA\_NS}$ ($\Delta < 0.001$ in
-the objective), making the constant unidentifiable from aggregate data.
+(maximum 1.5\%), making the constant effectively unidentifiable from
+aggregate data.
 
 The fix was to measure $\texttt{WRAP\_FMA\_NS}$ directly: an isolated
 microbenchmark (\texttt{tools/bench\_wrap\_fma.c}) that executes only the
@@ -1265,15 +1288,15 @@ ${\sim}0.36$--$0.45$\,ns/FMA.
     L1/L2-resident at small $\texttt{wrap\_m}$ (${\sim}0.26$\,ns/FMA),
     transitioning to memory-latency-bound at large $\texttt{wrap\_m}$
     (${\sim}0.53$\,ns/FMA). The production value
-    $\texttt{WRAP\_FMA\_NS} = 0.40$ (dashed line) is a representative
+    $\texttt{WRAP\_FMA\_NS} = 0.436$ (dashed line) is a representative
     point estimate from the least-squares slope over the
     $\texttt{wrap\_m} \in [64, 384]$ operating window.}
   \label{fig:wrap-curve}
 \end{figure}
 
 \paragraph{Disclosure: point-estimate approximation.}
-The shipped $\texttt{WRAP\_FMA\_NS}$ values, $0.40$ on Zen~4 and
-$0.4942$ on Apple M3~Pro, are representative point estimates from a
+The shipped $\texttt{WRAP\_FMA\_NS}$ values, $0.436$ on Zen~4 and
+$0.516$ on Apple M3~Pro, are representative point estimates from a
 hand-chosen operating-range window ($\texttt{wrap\_m} \in [64, 384]$),
 not a fully piecewise or continuous model of the cache-hierarchy
 transition visible in Figure~\ref{fig:wrap-curve}. The dispatch model
@@ -1285,9 +1308,9 @@ the single-constant approximation has proved sufficient in practice
 \paragraph{M3 Pro: a second identifiability failure.}
 The same methodology was applied to $\texttt{FP64\_DIV\_NS}$ on the Apple
 M3~Pro after the indirect fit converged to a physically implausible value
-(0.5\,ns, at its imposed lower bound; FP64 division latency on Apple
-Silicon is expected to be 13--16 cycles, or ${\sim}3.2$--$4.0$\,ns at
-4.05\,GHz). A second dedicated microbenchmark
+(0.5\,ns, at its imposed lower bound, well below the latency a
+dependency-chained FP64 division is expected to take on this
+architecture). A second dedicated microbenchmark
 (\texttt{tools/bench\_div\_chain.c}) measured the dependency-chained
 division cost directly (matching the actual usage in the hybrid engine's
 leaf-extraction synthetic-division recurrence, Section~\ref{sec:hybrid}),
@@ -1322,10 +1345,9 @@ bit-exact against the full-equity engine) but has a fixed upfront cost for
 mask construction and per-node branch checks.
 
 Table~\ref{tab:subset} reports speedups measured on M3~Pro. The pruning
-delivers a net win only for $n \ge 4096$ at low target fractions
-(${\le}\,5$--$10\%$), topping out at ${\sim}1.4\times$ speedup at
-$n = 4096$ with 1\% targets, and fading to breakeven by 25\% targets. At
-$n = 1024$, it is a net loss at every target ratio tested.
+delivers a net win across the tested range of $n$ at low target fractions,
+topping out at ${\sim}1.5\times$ speedup at $n = 1024$ with 1\% targets, and
+fading toward breakeven as the target fraction approaches 100\%.
 
 \begin{table}[t]
 \centering
@@ -1336,10 +1358,10 @@ $n = 1024$, it is a net loss at every target ratio tested.
 \toprule
 $n$ & Speedup @1\% targets & Speedup @5--10\% targets & Speedup @$\ge$25\% targets \\
 \midrule
-1024  & 0.92 & 0.91--0.92 & 0.91 \\
-4096  & 1.39 & 1.09--1.12 & 1.05--1.07 \\
-16384 & 1.27 & 1.06--1.08 & 1.03--1.05 \\
-65536 & 1.16 & 1.04--1.05 & 1.02--1.03 \\
+1024  & 1.49 & 1.17--1.21 & 1.00--1.15 \\
+4096  & 1.24 & 1.11--1.13 & 0.99--1.09 \\
+16384 & 1.16 & 1.10 & 1.00--1.08 \\
+65536 & 1.09 & 1.05 & 1.00--1.03 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1381,7 +1403,7 @@ tiers based on polynomial degree:
 
 The entire multi-level execution sequence, spanning dozens of kernel launches
 across all three tiers - is captured into a single CUDA Graph and replayed
-with ${\sim}2.5\,\mu$s total launch overhead.
+with negligible launch overhead.
 
 \subsection{Key Optimizations}
 
@@ -1405,14 +1427,143 @@ batch using multi-stream execution.
 \paragraph{Rejected optimizations.}
 Two approaches were tested and rejected after benchmarking:
 \begin{itemize}
-  \item \textbf{cuFFT callbacks:} Fusing the pointwise multiply into
-    cuFFT's load/store callbacks was 2.3$\times$ \emph{slower} than the
-    separate-kernel approach; per-element callback overhead breaks memory
-    coalescing.
+  \item \textbf{cuFFT LTO callbacks:} Fusing the pointwise multiply into
+    cuFFT's load/store callbacks was rejected on accuracy grounds, not
+    speed: per-element callback rounding compounds across tree levels to
+    ${\sim}2\%$ error, despite being within cuFFT's own accuracy
+    specification -- unacceptable given this algorithm's FP64 requirement
+    (Section~\ref{sec:experiments}).
   \item \textbf{$B = 1$ balanced tree:} Using single-player leaves (no
-    block structure) was 20--56\% slower because the tree performs 70\%
+    block structure) was substantially slower because the tree performs
     more FMA operations and adds kernel launch barriers.
 \end{itemize}
+
+\subsection{GPU Calibration Methodology}\label{sec:gpu-calib-methodology}
+
+Block-size selection on GPU follows the same empirical-lookup principle as
+the CPU (Section~\ref{sec:dispatch}): \texttt{gpu\_empirical\_best\_B}$(n,k)$
+performs a joint $(n,k)$ nearest-neighbor lookup over a calibrated
+\texttt{gbselect\_n[]}/\texttt{gbselect\_k[]}/\texttt{gbselect\_B[]} table, in
+log space, exactly mirroring the CPU's \texttt{select\_best\_B}. An
+analytical fallback (summed FMA/FFT cost estimation) remains in
+\texttt{gpu\_select\_best\_B\_est} for the case where no calibrated candidate
+satisfies the $(n,k)$ bounds at all; in normal operation this path is not
+exercised. Engine dispatch (linear vs.\ hybrid) is the one GPU decision that
+still compares candidates analytically rather than from a measured table, but
+it never selects linear across the full 210-cell calibrated heatmap --
+consistent with Section~\ref{sec:gpu}'s observation that the linear engine's
+sequential structure cannot compete with the tree engines' parallelism at any
+GPU-relevant size.
+
+\paragraph{Deliberately targeted scope, not a full sweep.}
+Unlike the CPU tables, the GPU B-selection table above the $k = n$ frontier
+($n > 1{,}572{,}864$) is not built from a dense adaptive sweep. A full
+48-candidate sweep to $n = 33{,}554{,}432$ was measured, from the
+calibration heatmap itself, to cost roughly 4.5 hours and \$28 of rented
+B200 time, with $n = 33{,}554{,}432$ alone accounting for 54\% of total
+heatmap compute. Instead, 13 targeted anchor points
+($n \in \{2\text{M}, 4\text{M}, 8.4\text{M}\}$ at $k = n/8, n/4, n/2, n$, plus
+$n = 16.7\text{M}$ at $k = n$ only) were measured directly with
+\texttt{calibrate\_gpu\_best\_b.cu --narrow-around}; all 13 converged
+uniformly on $B = 128$. The full adaptive calibration tooling
+(\texttt{calibrate\_adaptive.py}) works and is available for third parties
+porting to new hardware; only this project's own above-frontier B200 data is
+a deliberate targeted subset rather than the CPU's full treatment.
+
+\paragraph{Bug 1: single-repetition timing noise.}
+An attempt to extend the GPU calibration into the previously under-sampled
+$n = 1{,}024$--$524{,}288$ region, using the same adaptive priority-queue
+refinement already proven on CPU (Section~\ref{sec:dispatch}), initially
+produced a table that was measurably worse than the one it replaced: a diff
+against the pre-run baseline over the standard 84-cell benchmark grid showed
+36 regressions, several severe (e.g.\ $n = 2{,}048, k = 512$: dispatched
+$B = 1{,}280$ against a true $B = 64$, a 292.75\% gap; $n = 16{,}384, k = 64$:
+dispatched $B = 1{,}024$ against a true $B = 48$, a 265.32\% gap), and total
+grid time \emph{increased} 4.57\% relative to the unmodified baseline. Both
+worst cells finished in under $\sim$2\,ms total -- GPU kernel-launch-overhead
+territory. The root cause: the measurement oracles
+(\texttt{validate\_planner\_gpu.cu}, \texttt{calibrate\_gpu\_best\_b.cu}, and
+their CPU counterparts \texttt{validate\_best\_b.c}/
+\texttt{calibrate\_best\_b.c}) timed each candidate $B$ with a single
+repetition and no noise check, taking the fastest single sample as the
+winner. The GPU's candidate range spans $B = 16$ to $B = 1{,}536$
+(96$\times$) versus the CPU's $\{8,16,24,32,48,64\}$ (8$\times$), so a
+noise-driven misranking at small, sub-few-millisecond problem sizes could
+select a structurally different, far worse block size once dispatched for
+real -- a failure mode the CPU's narrower candidate range and larger
+per-measurement amortization (256 internal queries per probe) largely
+avoids. The fix ported the adaptive median/coefficient-of-variation
+convergence loop already proven in \texttt{heatmap\_gpu.cu} (up to 10
+repetitions, extended to 15 if $\mathrm{cv} > 3\%$) into all four
+measurement tools, GPU and CPU. A direct re-probe of the two worst cells
+after the fix confirmed the diagnosis: the $n = 2{,}048, k = 512$ gap
+collapsed from 292.75\% to $-0.10\%$, and $n = 16{,}384, k = 64$ from
+265.32\% to 0.34\%, while a third, independently real regression at
+$n = 65{,}536, k = 2{,}048$ stayed at 17.76\% (previously documented at
+16.5\%), confirming the fix removes fake noise-driven signal without
+masking genuine ones. The same night, a real, full-domain M3~Pro CPU
+recalibration through the fixed tool (92 probes, 2{,}466 $\to$ 2{,}558
+points) showed only modest gaps throughout (0--8\%, no wild swings),
+consistent with the CPU's narrower candidate range being far less exposed to
+this mechanism.
+
+\paragraph{Bug 2: sparse nearest-neighbor coverage.}
+With the measurement noise fixed and independently confirmed, a second,
+full attempt to populate the same $n = 1{,}024$--$524{,}288$ region (252
+probes, 93 $\to$ 345 points) surfaced a second, unrelated failure: a full
+diff against the original baseline showed 40 regressions out of the same
+84-cell grid, several catastrophic ($n = 1{,}024, k = 128$: $B = 64 \to
+1{,}024$, $+402.7\%$; $n = 65{,}536, k = 128$: $B = 64 \to 1{,}536$,
+$+329.3\%$; $n = 32{,}768, k = 256$: $B = 64 \to 1{,}536$, $+275.1\%$), and
+total grid time 5.23\% worse than the original baseline -- worse than
+Bug~1's own regression despite every individual measurement now being
+independently verified correct. This is a distinct mechanism from Bug~1:
+correct individual measurements do not by themselves make a sparse
+nearest-neighbor table safe. $B^*(n,k)$ has real local structure in this
+region, unlike the large-$n$ region the targeted anchors above already
+cover; populating a previously empty region from scratch via priority-queue
+sampling makes each newly injected point the nearest neighbor for an entire
+neighborhood of queries that were never themselves directly probed, with
+nothing to check whether that neighborhood actually agrees with the one
+point that was measured. This table was never shipped: it existed only on
+the rented instance used to produce it and was discarded before the
+instance was destroyed, preserved separately as evidence
+(\texttt{results/gpu\_fft\_config\_20260731\_run2\_BROKEN\_evidence.h}), not
+as usable calibration data.
+
+\paragraph{Canary safety net.}
+In direct response to both failures, \texttt{calibrate\_adaptive.py} now
+includes an automatic safety net rather than relying on a human diff after
+the fact. Before any calibration run, it snapshots the target config header
+byte-for-byte and measures a small, fixed, held-out canary set (three
+$k$-fractions per landmark $n$-anchor, deliberately disjoint from the
+landmark and adaptive-refinement points) using the same converged
+measurement oracle the rest of the pipeline trusts. After the run, it
+rebuilds the validation binary against the caller-supplied
+\texttt{--rebuild-cmd} (required; no default is assumed safe, since the GPU
+build needs an environment-specific include path and the CPU validator has
+no default binary at all) and re-measures the identical canaries,
+auto-reverting to the exact pre-run byte-for-byte snapshot if the aggregate
+canary time regresses more than 2\% or any single canary regresses more
+than 5\%. The mechanism was validated three ways before being trusted: a
+live pass-path run confirmed byte-identical (via \texttt{md5sum}) when
+canaries agree; a live run with a deliberately broken
+\texttt{--rebuild-cmd} confirmed the file is restored byte-for-byte; and
+unit tests replaying this session's own worst regression
+($n = 1{,}024, k = 128$, $+402.7\%$) confirm the comparison logic fails in
+exactly the way it should.
+
+\paragraph{Disclosure: an open limitation, not retroactively closed.}
+The canary net makes the \emph{next} calibration attempt over the
+$n = 1{,}024$--$524{,}288$ region safe to run unattended -- it does not
+itself produce the denser sampling that region would need for the
+nearest-neighbor lookup to be locally valid there. As of this writing, that
+region of the GPU B-selection table is exactly as calibrated as it was
+before this investigation: neither worse (both broken attempts were
+discarded before shipping) nor better. This is disclosed here rather than
+silently left implicit, consistent with this paper's broader position that
+the GPU calibration surface received a narrower, more targeted treatment
+than the CPU's, not the same full adaptive sweep.
 
 % ======================================================================
 \section{GPU Experimental Results}\label{sec:gpu-results}
@@ -1442,13 +1593,13 @@ and are not a subsample of Table~\ref{tab:gpu}.
 \toprule
 $n$ & $k{=}64$ & $k{=}1024$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-4{,}096        & 0.35     & 0.74     & 0.82      & 0.84 \\
-16{,}384       & 1.16     & 2.79     & 3.85      & 4.10 \\
-65{,}536       & 4.35     & 10.94    & 19.36     & 20.22 \\
-262{,}144      & 17.09    & 43.37    & 96.31     & 100.49 \\
-1{,}048{,}576  & 77.45    & 187.72   & 508.24    & 513.41 \\
-4{,}194{,}304  & 272.98   & 771.48   & 2{,}383.66 & 2{,}340.89 \\
-33{,}554{,}432 & 2{,}639.85 & 6{,}141.28 & 22{,}584.75 & 23{,}116.73 \\
+4{,}096        & 0.37     & 0.76     & 0.87      & 0.89 \\
+16{,}384       & 1.18     & 2.81     & 3.93      & 4.17 \\
+65{,}536       & 4.29     & 9.46     & 19.43     & 20.26 \\
+262{,}144      & 16.58    & 36.38    & 95.95     & 100.09 \\
+1{,}048{,}576  & 65.68    & 178.26   & 504.29    & 509.51 \\
+4{,}194{,}304  & 272.47   & 671.06   & 2{,}352.43 & 2{,}320.45 \\
+33{,}554{,}432 & 2{,}506.71 & 5{,}059.26 & 22{,}321.49 & 22{,}865.76 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1484,7 +1635,7 @@ $k = 100$ & 7{,}975{,}936 & 998.9 \\
   \label{fig:gpu-contour}
 \end{figure}
 
-At $k = n$, the GPU computes all 262{,}144 player equities in 100.5\,ms.
+At $k = n$, the GPU computes all 262{,}144 player equities in 100.1\,ms.
 The under-one-second frontier for $k = n$ is $n = 1{,}490{,}944$
 (918.8\,ms); the next candidate the search probed above it,
 $n = 1{,}506{,}304$, crosses to 1{,}124.2\,ms. At $k = 100$ the frontier
