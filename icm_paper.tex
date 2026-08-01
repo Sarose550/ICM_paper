@@ -876,9 +876,7 @@ count, division latency; not by $n$ or $k$.  This is exactly what the
 empirical block-size sweep finds (Section~\ref{sec:experiments}): the
 wall-clock-optimal $B$ on Zen~4 is $B = 32$, constant across the entire
 tested $(n,k)$ grid, with no detectable dependence on $k$ over the range
-$k \in [10^2, 10^5]$.  Had blocking provided a $\Theta(\log k)$
-asymptotic benefit, the optimal $B$ would grow with $k$; the fact that it
-does not is an independent experimental confirmation of
+$k \in [10^2, 10^5]$ -- an independent experimental confirmation of
 Corollary~\ref{cor:blocking-constant}.
 
 Numerical stability of the hybrid engine's within-block division is
@@ -1215,68 +1213,46 @@ FFT backend & FFTW+vDSP & AOCL (sole) & Library dispatch \\
 
 \subsection{Calibration Methodology: Direct Measurement vs.\ Indirect Regression}\label{sec:calib-methodology}
 
-The empirical crossover table (Section~\ref{sec:dispatch}) replaced an
-earlier roofline cost model that depended on hardware
-constants: $\tau_{\text{FMA}}$, cache bandwidths, per-size FFT costs,
-and several micro-architectural parameters; that are fit to timing data
-by nonlinear least squares. Two of these constants proved structurally
-unrecoverable from aggregate plan-timing data alone, leading to a
-methodological shift from indirect regression to isolated direct
-microbenchmarking. This section describes the failure mode, the fix, and
-the precedent it follows.
+All scalar constants in the shipped dispatch and cost-model paths are
+measured by isolated direct microbenchmark rather than fit by indirect
+regression against aggregate plan-timing data. An earlier approach that
+fit all constants simultaneously via nonlinear least squares failed for
+parameters whose per-plan contribution was too small to be
+identifiable---a formal \emph{persistency of excitation}
+failure~\citep{ljung1999}---and an intermediate approach that pinned
+only the problematic constants directly while fitting the rest suffered
+collinearity artifacts. All six scalar constants are now pinned
+directly; the migration is complete.
 
-\paragraph{Precedent: direct measurement over indirect inference.}
-The principle of measuring a parameter directly rather than backing it out
-of aggregate data has strong precedent in high-performance computing.
-FFTW's \texttt{PATIENT}-mode planner measures the actual execution time of
+\paragraph{Precedent.}
+Direct measurement over indirect inference has strong precedent in
+high-performance computing. FFTW's \texttt{PATIENT}-mode planner times
 candidate FFT plans directly rather than relying on an indirect cost
-model~\citep{frigo2005}. The BeBOP/Sparsity system's register-blocking search empirically times
-generated kernel variants per architecture to select the
-fastest~\citep{demmel2004}. The
-roofline model measures peak FLOP/s and memory bandwidth via dedicated
-streaming microbenchmarks rather than inferring them from application
-runs~\citep{williams2009}. In each case, the rationale is the same: when a
-parameter's contribution to the total observed cost is small relative to
-other, larger effects, an indirect regression lacks the signal to identify
-it reliably.
+model~\citep{frigo2005}. The BeBOP/Sparsity system's register-blocking
+search empirically times generated kernel variants per
+architecture~\citep{demmel2004}. The roofline model measures peak
+FLOP/s and memory bandwidth via dedicated streaming microbenchmarks
+rather than inferring them from application runs~\citep{williams2009}.
+The empirical crossover table (Section~\ref{sec:dispatch}) follows the
+same structural precedent as LAPACK's \texttt{ILAENV}
+\texttt{ISPEC=3}~\citep{anderson1999}: a problem-size threshold between
+two algorithms, measured empirically per machine.
 
-\paragraph{Persistency of excitation.}
-This failure mode has a formal name in control theory and system
-identification: \emph{persistency of excitation}~\citep{ljung1999}. A
-parameter is identifiable from training data only if the input signal
-varies its effect enough to be distinguishable from noise and from the
-effects of other parameters. When one parameter's contribution never
-exceeds a few percent of any training example's total cost (as is the case
-for wrap-correction cost in the tree engine; see below), the regression
-objective is effectively flat with respect to that parameter: wildly
-different values produce nearly identical aggregate predictions, and the
-fitted value reflects optimizer drift rather than physical reality.
-
-\paragraph{The wrap-correction identifiability failure.}
+\paragraph{Wrap-correction cost.}
 The tree engine's wrap correction (Algorithm~\ref{alg:tree}) corrects
-aliasing wraparound when truncated polynomial multiplication is performed
-via FFT with a transform size smaller than the full linear convolution
-length. The cost of this correction, parameterized by
-$\texttt{WRAP\_FMA\_NS}$ (nanoseconds per fused multiply-add in the
-correction loop), is a small fraction of any sampled plan's total
-predicted time. On AMD Zen~4, only 5 of 200 sampled plans had
-wrap-correction cost exceeding 1\% of that plan's total predicted time
-(maximum 1.5\%), making the constant effectively unidentifiable from
-aggregate data.
-
-The fix was to measure $\texttt{WRAP\_FMA\_NS}$ directly: an isolated
-microbenchmark (\texttt{tools/bench\_wrap\_fma.c}) that executes only the
-wrap-correction inner loop (a verbatim copy of the production code in
-\texttt{src/icm.c}), sweeping the wrap range over $[4, 2048]$ across three
-polynomial-size regimes (2K, 8K, 32K elements) so that the correction
-dominates the measured time by construction ($R^2 = 0.9998$). The result,
-displayed in Figure~\ref{fig:wrap-curve}, is not a single constant but a
-genuine cache-hierarchy-transition curve: the marginal cost rises smoothly
-from ${\sim}0.26$\,ns/FMA at small wrap ranges (L1/L2-resident,
-near-FMA-throughput-bound) to ${\sim}0.53$\,ns/FMA at large wrap ranges
-(memory-latency-bound as the working set exceeds cache capacity). At the
-decision-relevant operating range ($\texttt{wrap\_m} \approx 64$--$384$,
-matching tree levels~7--9 for typical $(n,k)$ pairs), the local slope is
+aliasing wraparound when truncated polynomial multiplication is
+performed via FFT with a transform size smaller than the full linear
+convolution length. Its cost, parameterized by
+$\texttt{WRAP\_FMA\_NS}$, is measured by an isolated microbenchmark
+(\texttt{tools/bench\_wrap\_fma.c}) that executes the production
+wrap-correction inner loop verbatim, sweeping the wrap range over
+$[4, 2048]$ across three polynomial-size regimes so that the correction
+dominates the measured time by construction ($R^2 = 0.9998$). The
+result (Figure~\ref{fig:wrap-curve}) is a genuine cache-hierarchy
+transition curve: the marginal cost rises from ${\sim}0.26$\,ns/FMA at
+small wrap ranges (L1/L2-resident) to ${\sim}0.53$\,ns/FMA at large
+wrap ranges (memory-latency-bound). At the operating window
+($\texttt{wrap\_m} \approx 64$--$384$), the local slope is
 ${\sim}0.36$--$0.45$\,ns/FMA.
 
 \begin{figure}[t]
@@ -1296,41 +1272,24 @@ ${\sim}0.36$--$0.45$\,ns/FMA.
 
 \paragraph{Disclosure: point-estimate approximation.}
 The shipped $\texttt{WRAP\_FMA\_NS}$ values, $0.436$ on Zen~4 and
-$0.516$ on Apple M3~Pro, are representative point estimates from a
-hand-chosen operating-range window ($\texttt{wrap\_m} \in [64, 384]$),
-not a fully piecewise or continuous model of the cache-hierarchy
-transition visible in Figure~\ref{fig:wrap-curve}. The dispatch model
-treats wrap correction as having a single constant marginal cost; a more
-accurate model would account for the dependence on working-set size, but
-the single-constant approximation has proved sufficient in practice
-(dispatch accuracy 42/44 on Zen~4, Section~\ref{sec:dispatch}).
+$0.516$ on Apple M3~Pro, are representative point estimates from the
+$\texttt{wrap\_m} \in [64, 384]$ operating window, not a fully
+piecewise model of the cache-hierarchy transition in
+Figure~\ref{fig:wrap-curve}. The single-constant approximation has
+proved sufficient in practice (dispatch accuracy 42/44 on Zen~4,
+Section~\ref{sec:dispatch}).
 
-\paragraph{M3 Pro: a second identifiability failure.}
-The same methodology was applied to $\texttt{FP64\_DIV\_NS}$ on the Apple
-M3~Pro after the indirect fit converged to a physically implausible value
-(0.5\,ns, at its imposed lower bound, well below the latency a
-dependency-chained FP64 division is expected to take on this
-architecture). A second dedicated microbenchmark
-(\texttt{tools/bench\_div\_chain.c}) measured the dependency-chained
-division cost directly (matching the actual usage in the hybrid engine's
-leaf-extraction synthetic-division recurrence, Section~\ref{sec:hybrid}),
-yielding $3.4890$\,ns.
+\paragraph{FP64 division latency.}
+$\texttt{FP64\_DIV\_NS}$ is measured by a dedicated dependency-chained
+division microbenchmark (\texttt{tools/bench\_div\_chain.c}) matching
+the hybrid engine's synthetic-division recurrence
+(Section~\ref{sec:hybrid}), yielding $3.4890$\,ns on M3~Pro.
 
-\paragraph{Collinearity caveat (resolved).}
-An earlier revision of this calibration pinned only
-$\texttt{WRAP\_FMA\_NS}$ and $\texttt{FP64\_DIV\_NS}$ directly, leaving the
-remaining cost-model constants to a nonlinear-least-squares fit. That fit
-raised the aggregate RMS log-relative error from 6.57\% to 10.2\% on
-M3~Pro and pushed $\texttt{FFT\_OVERHEAD\_NS}$ to a physically odd
-631\,ns to compensate, a collinearity artifact of the
-\texttt{sample\_plans} training data, not a correctness issue.
-\textbf{This limitation no longer applies.} All six scalar constants are
-now pinned directly from microbenchmarks; \texttt{tools/fit\_cost\_model.py}
-skips the regression entirely once every scalar is supplied, and
-$\texttt{FFT\_OVERHEAD\_NS}$ is $0.0$ on every device. The identifiability
-failure recorded here is what motivated that migration, not a standing
-limitation of anything shipped. \texttt{bench\_grid verify} passes all
-tests and \texttt{bench\_grid crossover} shows a clean, monotonic
+\paragraph{Current status.}
+All six scalar constants are now pinned directly from microbenchmarks;
+\texttt{tools/fit\_cost\_model.py} skips regression entirely once every
+scalar is supplied. \texttt{bench\_grid verify} passes all tests and
+\texttt{bench\_grid crossover} shows a clean, monotonic
 linear-to-hybrid transition at $k \approx 122$--$124$ on M3~Pro and
 $k \approx 249$--$281$ on Zen~4.
 
@@ -1344,24 +1303,31 @@ top-down propagation phase. This optimization is correct (verified
 bit-exact against the full-equity engine) but has a fixed upfront cost for
 mask construction and per-node branch checks.
 
-Table~\ref{tab:subset} reports speedups measured on M3~Pro. The pruning
-delivers a net win across the tested range of $n$ at low target fractions,
-topping out at ${\sim}1.5\times$ speedup at $n = 1024$ with 1\% targets, and
-fading toward breakeven as the target fraction approaches 100\%.
+Table~\ref{tab:subset} reports speedups measured on both platforms. The
+pruning delivers a net win across the tested range of $n$ at low target
+fractions on both, topping out at ${\sim}1.5\times$ on M3~Pro and
+${\sim}1.3\times$ on Zen~4 at low targets, and fading toward breakeven (or
+a slight loss at $n \ge 16{,}384$ on Zen~4) as the target fraction
+approaches 100\%.
 
 \begin{table}[t]
 \centering
-\caption{Speedup of subset equity vs.\ full-equity computation, M3~Pro,
-  single-threaded, $Q = 256$. Ratios ${<}\,1$ indicate net slowdown.}
+\caption{Speedup of subset equity vs.\ full-equity computation,
+  single-threaded, $Q = 256$. Ratios ${<}\,1$ indicate net slowdown.
+  Each $n$ shows M3~Pro then Zen~4.}
 \label{tab:subset}
 \begin{tabular}{@{}l c c c@{}}
 \toprule
 $n$ & Speedup @1\% targets & Speedup @5--10\% targets & Speedup @$\ge$25\% targets \\
 \midrule
 1024  & 1.49 & 1.17--1.21 & 1.00--1.15 \\
+      & 1.25 & 1.22--1.23 & 1.11--1.17 \\
 4096  & 1.24 & 1.11--1.13 & 0.99--1.09 \\
-16384 & 1.16 & 1.10 & 1.00--1.08 \\
-65536 & 1.09 & 1.05 & 1.00--1.03 \\
+      & 1.29 & 1.14--1.16 & 1.00--1.11 \\
+16384 & 1.16 & 1.10        & 1.00--1.08 \\
+      & 1.14 & 1.04--1.07  & 0.98--1.03 \\
+65536 & 1.09 & 1.05        & 1.00--1.03 \\
+      & 1.11 & 1.05--1.06  & 0.99--1.04 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1470,100 +1436,32 @@ uniformly on $B = 128$. The full adaptive calibration tooling
 porting to new hardware; only this project's own above-frontier B200 data is
 a deliberate targeted subset rather than the CPU's full treatment.
 
-\paragraph{Bug 1: single-repetition timing noise.}
-An attempt to extend the GPU calibration into the previously under-sampled
-$n = 1{,}024$--$524{,}288$ region, using the same adaptive priority-queue
-refinement already proven on CPU (Section~\ref{sec:dispatch}), initially
-produced a table that was measurably worse than the one it replaced: a diff
-against the pre-run baseline over the standard 84-cell benchmark grid showed
-36 regressions, several severe (e.g.\ $n = 2{,}048, k = 512$: dispatched
-$B = 1{,}280$ against a true $B = 64$, a 292.75\% gap; $n = 16{,}384, k = 64$:
-dispatched $B = 1{,}024$ against a true $B = 48$, a 265.32\% gap), and total
-grid time \emph{increased} 4.57\% relative to the unmodified baseline. Both
-worst cells finished in under $\sim$2\,ms total -- GPU kernel-launch-overhead
-territory. The root cause: the measurement oracles
-(\texttt{validate\_planner\_gpu.cu}, \texttt{calibrate\_gpu\_best\_b.cu}, and
-their CPU counterparts \texttt{validate\_best\_b.c}/
-\texttt{calibrate\_best\_b.c}) timed each candidate $B$ with a single
-repetition and no noise check, taking the fastest single sample as the
-winner. The GPU's candidate range spans $B = 16$ to $B = 1{,}536$
-(96$\times$) versus the CPU's $\{8,16,24,32,48,64\}$ (8$\times$), so a
-noise-driven misranking at small, sub-few-millisecond problem sizes could
-select a structurally different, far worse block size once dispatched for
-real -- a failure mode the CPU's narrower candidate range and larger
-per-measurement amortization (256 internal queries per probe) largely
-avoids. The fix ported the adaptive median/coefficient-of-variation
-convergence loop already proven in \texttt{heatmap\_gpu.cu} (up to 10
-repetitions, extended to 15 if $\mathrm{cv} > 3\%$) into all four
-measurement tools, GPU and CPU. A direct re-probe of the two worst cells
-after the fix confirmed the diagnosis: the $n = 2{,}048, k = 512$ gap
-collapsed from 292.75\% to $-0.10\%$, and $n = 16{,}384, k = 64$ from
-265.32\% to 0.34\%, while a third, independently real regression at
-$n = 65{,}536, k = 2{,}048$ stayed at 17.76\% (previously documented at
-16.5\%), confirming the fix removes fake noise-driven signal without
-masking genuine ones. The same night, a real, full-domain M3~Pro CPU
-recalibration through the fixed tool (92 probes, 2{,}466 $\to$ 2{,}558
-points) showed only modest gaps throughout (0--8\%, no wild swings),
-consistent with the CPU's narrower candidate range being far less exposed to
-this mechanism.
-
-\paragraph{Bug 2: sparse nearest-neighbor coverage.}
-With the measurement noise fixed and independently confirmed, a second,
-full attempt to populate the same $n = 1{,}024$--$524{,}288$ region (252
-probes, 93 $\to$ 345 points) surfaced a second, unrelated failure: a full
-diff against the original baseline showed 40 regressions out of the same
-84-cell grid, several catastrophic ($n = 1{,}024, k = 128$: $B = 64 \to
-1{,}024$, $+402.7\%$; $n = 65{,}536, k = 128$: $B = 64 \to 1{,}536$,
-$+329.3\%$; $n = 32{,}768, k = 256$: $B = 64 \to 1{,}536$, $+275.1\%$), and
-total grid time 5.23\% worse than the original baseline -- worse than
-Bug~1's own regression despite every individual measurement now being
-independently verified correct. This is a distinct mechanism from Bug~1:
-correct individual measurements do not by themselves make a sparse
-nearest-neighbor table safe. $B^*(n,k)$ has real local structure in this
-region, unlike the large-$n$ region the targeted anchors above already
-cover; populating a previously empty region from scratch via priority-queue
-sampling makes each newly injected point the nearest neighbor for an entire
-neighborhood of queries that were never themselves directly probed, with
-nothing to check whether that neighborhood actually agrees with the one
-point that was measured. This table was never shipped: it existed only on
-the rented instance used to produce it and was discarded before the
-instance was destroyed, preserved separately as evidence
-(\texttt{results/gpu\_fft\_config\_20260731\_run2\_BROKEN\_evidence.h}), not
-as usable calibration data.
-
 \paragraph{Canary safety net.}
-In direct response to both failures, \texttt{calibrate\_adaptive.py} now
-includes an automatic safety net rather than relying on a human diff after
-the fact. Before any calibration run, it snapshots the target config header
+After measurement-noise and sparse-coverage incidents corrupted early
+calibration runs over the $n = 1{,}024$--$524{,}288$ region,
+\texttt{calibrate\_adaptive.py} now includes an automatic safety net.
+Before any calibration run, it snapshots the target config header
 byte-for-byte and measures a small, fixed, held-out canary set (three
 $k$-fractions per landmark $n$-anchor, deliberately disjoint from the
 landmark and adaptive-refinement points) using the same converged
 measurement oracle the rest of the pipeline trusts. After the run, it
-rebuilds the validation binary against the caller-supplied
-\texttt{--rebuild-cmd} (required; no default is assumed safe, since the GPU
-build needs an environment-specific include path and the CPU validator has
-no default binary at all) and re-measures the identical canaries,
-auto-reverting to the exact pre-run byte-for-byte snapshot if the aggregate
-canary time regresses more than 2\% or any single canary regresses more
-than 5\%. The mechanism was validated three ways before being trusted: a
-live pass-path run confirmed byte-identical (via \texttt{md5sum}) when
-canaries agree; a live run with a deliberately broken
-\texttt{--rebuild-cmd} confirmed the file is restored byte-for-byte; and
-unit tests replaying this session's own worst regression
-($n = 1{,}024, k = 128$, $+402.7\%$) confirm the comparison logic fails in
-exactly the way it should.
+rebuilds the validation binary and re-measures the identical canaries,
+auto-reverting to the exact pre-run byte-for-byte snapshot if the
+aggregate canary time regresses more than 2\% or any single canary
+regresses more than 5\%. The mechanism was validated three ways: a live
+pass-path run confirmed byte-identical restoration when canaries agree; a
+run with a deliberately broken rebuild command confirmed the file is
+restored; and unit tests replaying a known regression confirmed the
+comparison logic fails correctly.
 
-\paragraph{Disclosure: an open limitation, not retroactively closed.}
+\paragraph{Disclosure: an open limitation.}
 The canary net makes the \emph{next} calibration attempt over the
-$n = 1{,}024$--$524{,}288$ region safe to run unattended -- it does not
+$n = 1{,}024$--$524{,}288$ region safe to run unattended---it does not
 itself produce the denser sampling that region would need for the
 nearest-neighbor lookup to be locally valid there. As of this writing, that
 region of the GPU B-selection table is exactly as calibrated as it was
 before this investigation: neither worse (both broken attempts were
-discarded before shipping) nor better. This is disclosed here rather than
-silently left implicit, consistent with this paper's broader position that
-the GPU calibration surface received a narrower, more targeted treatment
-than the CPU's, not the same full adaptive sweep.
+discarded before shipping) nor better.
 
 % ======================================================================
 \section{GPU Experimental Results}\label{sec:gpu-results}
