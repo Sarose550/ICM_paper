@@ -26,7 +26,7 @@
 \author{Sam Rosenstrauch \\
         \texttt{sarose550@gmail.com}}
 
-\date{July 21, 2026}
+\date{August 3, 2026}
 
 \begin{document}
 \maketitle
@@ -921,7 +921,7 @@ $V_2$ equities (see Appendix) and cross-checked between engines.
 
 Tables~\ref{tab:serial} and~\ref{tab:parallel} report execution times
 across a grid of $(n, k)$ pairs. All numbers are from real measurements on
-the target hardware (\texttt{bench\_grid}; M3~Pro July 24, 2026, Zen~4
+the target hardware (\texttt{bench\_grid}; M3~Pro August 2, 2026, Zen~4
 July 27, 2026); none are estimated or borrowed. The best engine per cell is shown, with
 dispatch decisions made automatically by the empirical crossover table.
 
@@ -939,19 +939,19 @@ dispatch decisions made automatically by the empirical crossover table.
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 1.72(L) & 7.07(L) & 13.0(L) & 17.9(H) & 21.0(H) & 28.6(H)
+1024  & 1.70(L) & 7.17(L) & 13.1(L) & 18.0(H) & 21.2(H) & 28.0(H)
       & 1.46(L) & 3.48(L) & 7.32(L) & 19.1(H) & 22.3(H) & 24.1(H) \\
-2048  & 4.10(L) & 14.1(L) & 26.1(L) & 44.4(H) & 51.8(H) & 56.3(H)
+2048  & 4.12(L) & 14.4(L) & 26.3(L) & 44.9(H) & 52.1(H) & 56.4(H)
       & 3.67(L) & 8.21(L) & 15.0(L) & 48.4(H) & 53.7(H) & 57.2(H) \\
-4096  & 8.13(L) & 28.3(L) & 52.0(L) & 108(H)  & 123(H)  & 141(H)
+4096  & 8.24(L) & 28.7(L) & 52.5(L) & 109(H)  & 124(H)  & 137(H)
       & 7.39(L) & 17.8(L) & 25.8(L) & 115(H)  & 128(H)  & 139(H) \\
-8192  & 16.3(L) & 59.7(L) & 104(L)  & 291(H)  & 374(T)  & 407(T)
+8192  & 16.4(L) & 57.2(L) & 105(L)  & 284(H)  & 302(H)  & 321(H)
       & 13.4(L) & 34.3(L) & 53.6(L) & 277(H)  & 315(H)  & 341(H) \\
-16384 & 32.4(L) & 113(L)  & 208(L)  & 784(T)  & 788(H)  & 967(T)
+16384 & 32.7(L) & 114(L)  & 210(L)  & 636(H)  & 712(H)  & 753(H)
       & 29.6(L) & 56.9(L) & 117(L)  & 667(H)  & 743(H)  & 810(H) \\
-32768 & 64.9(L) & 226(L)  & 416(L)  & 1670(H) & 1920(H) & 2100(H)
+32768 & 64.8(L) & 232(L)  & 417(L)  & 1490(H) & 1660(H) & 1790(H)
       & 62.3(L) & 131(L)  & 218(L)  & 1570(H) & 1790(H) & 1950(H) \\
-65536 & 130(L)  & 452(L)  & 831(L)  & 4030(H) & 4670(H) & 5610(H)
+65536 & 133(L)  & 460(L)  & 834(L)  & 3500(H) & 3910(H) & 4150(H)
       & 118(L)  & 266(L)  & 411(L)  & 4110(H) & 4750(H) & 5110(H) \\
 \bottomrule
 \end{tabular}%
@@ -973,17 +973,17 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 0.325(L) & 1.28(L)  & 2.07(H)  & 2.42(H)  & 2.82(H)  & 3.81(H)
+1024  & 0.338(L) & 1.23(L)  & 2.24(H)  & 2.42(H)  & 2.83(H)  & 3.94(H)
       & 0.121(L) & 0.359(L) & 1.21(L)  & 1.41(H)  & 1.66(H)  & 1.78(H) \\
-4096  & 1.40(L)  & 4.90(L)  & 8.82(L)  & 14.8(H)  & 16.6(H)  & 18.9(H)
+4096  & 1.37(L)  & 4.80(L)  & 8.70(L)  & 14.6(H)  & 16.8(H)  & 18.0(H)
       & 0.651(L) & 1.48(L)  & 2.35(L)  & 8.40(H)  & 9.36(H)  & 10.1(H) \\
-8192  & 2.71(L)  & 9.63(L)  & 16.8(H)  & 39.8(H)  & 50.6(T)  & 55.0(T)
+8192  & 2.71(L)  & 9.46(L)  & 16.4(H)  & 40.6(H)  & 41.3(H)  & 44.5(H)
       & 1.23(L)  & 2.84(L)  & 4.63(L)  & 20.4(H)  & 24.2(H)  & 28.1(H) \\
-16384 & 5.40(L)  & 18.9(L)  & 33.9(H)  & 108(T)   & 108(H)   & 135(T)
+16384 & 5.38(L)  & 18.8(L)  & 33.6(H)  & 88.3(H)  & 98.4(H)  & 108(H)
       & 2.37(L)  & 6.43(L)  & 9.69(L)  & 88.1(H)  & 112(H)   & 142(H) \\
-32768 & 10.7(L)  & 37.8(L)  & 68.1(L)  & 231(H)   & 265(H)   & 295(H)
+32768 & 10.8(L)  & 37.8(L)  & 71.4(L)  & 205(H)   & 237(H)   & 258(H)
       & 6.04(L)  & 13.6(L)  & 23.6(L)  & 280(H)   & 314(H)   & 363(H) \\
-65536 & 21.1(L)  & 78.9(L)  & 140(H)   & 584(H)   & 682(H)   & 811(H)
+65536 & 21.1(L)  & 76.1(L)  & 138(H)   & 510(H)   & 578(H)   & 647(H)
       & 21.0(L)  & 30.4(L)  & 48.4(L)  & 627(H)   & 729(H)   & 901(H) \\
 \bottomrule
 \end{tabular}%
@@ -1215,14 +1215,12 @@ FFT backend & FFTW+vDSP & AOCL (sole) & Library dispatch \\
 
 All scalar constants in the shipped dispatch and cost-model paths are
 measured by isolated direct microbenchmark rather than fit by indirect
-regression against aggregate plan-timing data. An earlier approach that
-fit all constants simultaneously via nonlinear least squares failed for
-parameters whose per-plan contribution was too small to be
-identifiable---a formal \emph{persistency of excitation}
-failure~\citep{ljung1999}---and an intermediate approach that pinned
-only the problematic constants directly while fitting the rest suffered
-collinearity artifacts. All six scalar constants are now pinned
-directly; the migration is complete.
+regression against aggregate plan-timing data. Fitting them jointly via
+nonlinear least squares is not identifiable: several constants'
+per-plan contribution is too small to separate from the others, a
+formal \emph{persistency of excitation} failure~\citep{ljung1999}. Direct
+microbenchmarking sidesteps the identifiability problem entirely by
+measuring each constant in isolation.
 
 \paragraph{Precedent.}
 Direct measurement over indirect inference has strong precedent in
@@ -1285,13 +1283,9 @@ division microbenchmark (\texttt{tools/bench\_div\_chain.c}) matching
 the hybrid engine's synthetic-division recurrence
 (Section~\ref{sec:hybrid}), yielding $3.4890$\,ns on M3~Pro.
 
-\paragraph{Current status.}
-All six scalar constants are now pinned directly from microbenchmarks;
-\texttt{tools/fit\_cost\_model.py} skips regression entirely once every
-scalar is supplied. \texttt{bench\_grid verify} passes all tests and
-\texttt{bench\_grid crossover} shows a clean, monotonic
-linear-to-hybrid transition at $k \approx 122$--$124$ on M3~Pro and
-$k \approx 249$--$281$ on Zen~4.
+With all scalar constants pinned directly from microbenchmark, the
+resulting dispatch shows a clean, monotonic linear-to-hybrid transition
+at $k \approx 122$--$124$ on M3~Pro and $k \approx 249$--$281$ on Zen~4.
 
 \subsection{Subset Equity Pruning}\label{sec:subset}
 
@@ -1437,31 +1431,16 @@ porting to new hardware; only this project's own above-frontier B200 data is
 a deliberate targeted subset rather than the CPU's full treatment.
 
 \paragraph{Canary safety net.}
-After measurement-noise and sparse-coverage incidents corrupted early
-calibration runs over the $n = 1{,}024$--$524{,}288$ region,
-\texttt{calibrate\_adaptive.py} now includes an automatic safety net.
-Before any calibration run, it snapshots the target config header
-byte-for-byte and measures a small, fixed, held-out canary set (three
-$k$-fractions per landmark $n$-anchor, deliberately disjoint from the
-landmark and adaptive-refinement points) using the same converged
-measurement oracle the rest of the pipeline trusts. After the run, it
-rebuilds the validation binary and re-measures the identical canaries,
-auto-reverting to the exact pre-run byte-for-byte snapshot if the
-aggregate canary time regresses more than 2\% or any single canary
-regresses more than 5\%. The mechanism was validated three ways: a live
-pass-path run confirmed byte-identical restoration when canaries agree; a
-run with a deliberately broken rebuild command confirmed the file is
-restored; and unit tests replaying a known regression confirmed the
-comparison logic fails correctly.
-
-\paragraph{Disclosure: an open limitation.}
-The canary net makes the \emph{next} calibration attempt over the
-$n = 1{,}024$--$524{,}288$ region safe to run unattended---it does not
-itself produce the denser sampling that region would need for the
-nearest-neighbor lookup to be locally valid there. As of this writing, that
-region of the GPU B-selection table is exactly as calibrated as it was
-before this investigation: neither worse (both broken attempts were
-discarded before shipping) nor better.
+\texttt{calibrate\_adaptive.py} guards every calibration run with an
+automatic safety net: it snapshots the target config header, measures a
+small held-out canary set before and after the run using the same
+converged measurement oracle as the rest of the pipeline, and
+auto-reverts to the pre-run snapshot if the canaries regress (more than
+2\% in aggregate, or more than 5\% on any single point). This prevents a
+noisy or under-sampled calibration run from silently shipping a
+regression. It does not itself densify sampling in a given region --
+the $n = 1{,}024$--$524{,}288$ region of the GPU B-selection table
+remains an open item for future calibration work.
 
 % ======================================================================
 \section{GPU Experimental Results}\label{sec:gpu-results}
@@ -1547,7 +1526,7 @@ VRAM at large $k$ and by tree-level cliffs at large $n$.
 I have presented a high-performance algorithm for computing ICM tournament
 equities using generating-function quadrature and FFT-accelerated
 subproduct trees. The algorithm achieves $\bigO(Qn\log^2 k)$ time, double-precision accuracy via $Q = 256$ quadrature points (relative error
-${<}\,5 \times 10^{-12}$ on typical inputs), and automatically dispatches
+${<}\,1.6 \times 10^{-10}$), and automatically dispatches
 between a linear engine (optimal for small $k$) and a hybrid block-tree
 engine (optimal for large $k$) using an empirically calibrated crossover
 table (Section~\ref{sec:dispatch}).
