@@ -33,21 +33,26 @@
 
 \begin{abstract}
 The Independent Chip Model (ICM) maps poker tournament chip stacks to
-expected prize money, but exact computation requires summing over all
-$n!$ elimination orderings. I present a deterministic algorithm that
+expected prize money, but exact computation is combinatorially
+intractable at scale: naive enumeration sums over all $n!$ elimination
+orderings, and even the standard bitmask dynamic program, at
+$\bigO(n \cdot 2^n)$, caps out around $n = 23$ players. I present a
+deterministic algorithm that
 reformulates ICM equity as a one-dimensional integral over
 generating-function coefficients, evaluated by Gaussian quadrature
 ($Q = 256$ nodes, relative error ${<}\,1.6 \times 10^{-10}$). The
-central challenge - computing leave-one-out polynomial products for all
-$n$ players - is solved by an FFT-accelerated subproduct tree whose
+central challenge, computing leave-one-out polynomial products for all
+$n$ players, is solved by an FFT-accelerated subproduct tree whose
 propagation phase is the adjoint of its build phase, reducing cost from
 $\bigO(nk)$ to $\bigO(n \log^2 k)$ per quadrature point. An empirical
 lookup table (calibrated per device) dispatches
 automatically between a batched linear engine and a hybrid block-tree
 engine. I evaluate the CPU implementation in detail on Apple M3~Pro and
 AMD Zen~4 (with AOCL-FFTW): the hybrid and linear engines compute exact
-equities for up to 17,984 players in one second, single-threaded, on
-Zen~4. A CUDA implementation for NVIDIA B200 extends this to roughly
+equities for up to 26,816 players in one second, single-threaded, on our
+Zen~4 reference machine (18,368 on Apple M3~Pro), and 65,536 across 16
+threads, both located by direct binary search rather than interpolated.
+A CUDA implementation for NVIDIA B200 extends this to roughly
 1.5 million players in about a second.
 \end{abstract}
 
@@ -61,7 +66,7 @@ they lose their chips. A payout structure $\pi = (\pi_0, \pi_1, \ldots, \pi_{k-1
 $k \leq n$ positions receiving nonzero prizes and $\pi_0 \geq \pi_1 \geq
 \cdots \geq \pi_{k-1} \geq 0$ (position $r+1$ receives payout $\pi_r$). The \emph{Independent Chip Model} (ICM)
 provides a principled mapping from a player's chip stack to their
-expected tournament equity - the expected prize money they will
+expected tournament equity, the expected prize money they will
 receive~\citep{malmuth1987,harville1973}.
 
 Despite its central role in tournament strategy, exact ICM computation
@@ -85,14 +90,15 @@ this framing, the combinatorial sum collapses into an integral that
 depends only on the chip stacks.
 
 The integral is evaluated by Gaussian quadrature with $Q = 256$ nodes,
-achieving exponential convergence to double-precision accuracy - a choice
-driven by worst-case stack ratios up to $10^9$, not just the well-behaved
-uniform case (Section~\ref{sec:accuracy} justifies the specific value).
+achieving exponential convergence to double-precision accuracy. This is a
+choice driven by worst-case stack ratios up to $10^9$, not just the
+well-behaved uniform case (Section~\ref{sec:accuracy} justifies the
+specific value).
 The remaining challenge is evaluating the integrand efficiently at each
 quadrature point, which requires computing a degree-$k$ leave-one-out
 polynomial product for each of $n$ players. I address this with an
 FFT-accelerated binary subproduct tree whose propagation phase is the
-adjoint of the build phase - a cross-correlation that distributes the
+adjoint of the build phase, a cross-correlation that distributes the
 payout vector to all leaves simultaneously.
 
 My contributions are:
@@ -195,8 +201,8 @@ the dozens of kernel launches in a single tree traversal.
 % ======================================================================
 
 This section derives the integral representation that is the foundation
-of the algorithm. All of the key ideas - the exponential clock, the
-generating function, and the one-dimensional integral - are presented
+of the algorithm. All of the key ideas (the exponential clock, the
+generating function, and the one-dimensional integral) are presented
 here, with supporting proofs where they provide insight.
 
 \subsection{The Malmuth--Harville Model and Exponential Clocks}
@@ -225,7 +231,7 @@ unchanged stacks.
 The MH model has an equivalent continuous-time formulation that is central
 to my approach. Assign each player~$j$ an independent exponential random
 variable $T_j \sim \mathrm{Exp}(S_j)$ with density $S_j e^{-S_j t}$ for
-$t \geq 0$. Players are eliminated in order of increasing $T_j$ - smallest
+$t \geq 0$. Players are eliminated in order of increasing $T_j$: smallest
 $T_j$ is eliminated first, etc.
 
 Why does this reproduce the MH model? For any two players $i, j$, the
@@ -302,7 +308,7 @@ Multiplying by the payout $\pi_r$ and summing over positions:
 
 The inner sum $\Psi_i(v) = \sum_{r=0}^{k-1} \pi_r \cdot [x^r] Q_i(x; v)$
 is the dot product of the payout vector with the coefficient vector of
-$Q_i$ - exactly the quantity the subproduct tree will compute efficiently.
+$Q_i$, exactly the quantity the subproduct tree will compute efficiently.
 
 \subsection{Numerical Quadrature}
 
@@ -333,8 +339,8 @@ tanh-sinh quadrature).
 The quadrature rule reduces ICM computation to evaluating
 $\Psi_i(v_q) = \sum_{r=0}^{k-1} \pi_r \cdot [x^r] Q_i(x; v_q)$ for
 all $i = 1, \ldots, n$ at each of $Q$ quadrature points. Computing
-$Q_i(x; v_q) = \prod_{j \neq i} (a_j + b_j x)$ naively - one player at a
-time - would cost $\bigO(n^2 k)$ per quadrature point. This section
+$Q_i(x; v_q) = \prod_{j \neq i} (a_j + b_j x)$ naively, one player at a
+time, would cost $\bigO(n^2 k)$ per quadrature point. This section
 presents three engines that compute all $n$ leave-one-out products
 simultaneously, with cost-model-driven automatic dispatch.
 
@@ -342,7 +348,7 @@ I will work throughout with truncated polynomials in the vector space
 $\mathbb{R}[x]_{<k} \cong \mathbb{R}^k$ of polynomials of degree $<k$,
 equipped with the Euclidean inner product
 $\ip{f}{g} = \sum_{m=0}^{k-1} f_m g_m$, so that
-$\Psi_i(v) = \ip{\pi}{Q_i}$.
+$\Psi_i(v) = \ip{\pi}{Q_i(x;\, v)}$.
 
 \subsection{Engine 1: Batched Linear Forward-Backward}\label{sec:linear}
 
@@ -484,8 +490,8 @@ the seed. At each internal node, the build phase computes
 $(L, R) \mapsto L * R \bmod x^k$. Holding the sibling fixed and viewing
 this as the linear map $T_S$ (where $S$ denotes the sibling polynomial)
 in the descendant of interest,
-the adjoint $T_S^{\ast}$ is $g \mapsto g \star S$
-- exactly what Algorithm~\ref{alg:tree} implements at each level.
+the adjoint $T_S^{\ast}$ is $g \mapsto g \star S$,
+exactly what Algorithm~\ref{alg:tree} implements at each level.
 
 \begin{theorem}[Correctness of the tree engine]\label{thm:tree-correct}
 After Algorithm~\ref{alg:tree} completes, $g^{(0)}_j[0] = \Psi_j$ for all
@@ -552,18 +558,18 @@ by a conjugation in the frequency domain: for real-valued $f, h$, the
 discrete Fourier transform satisfies $\widehat{f \star h} = \hat f \cdot
 \overline{\hat h}$, whereas ordinary convolution satisfies $\widehat{f * h}
 = \hat f \cdot \hat h$ (no conjugate). Conjugating a transformed vector is
-$\bigO(d)$ - an elementwise sign flip on the imaginary part - versus
+$\bigO(d)$ (an elementwise sign flip on the imaginary part) versus
 $\bigO(d\log d)$ for a fresh transform. Two consequences
 follow directly. First, each child polynomial's forward FFT, already
 computed once during the build phase to convolve it with its sibling
-(Algorithm~\ref{alg:tree}, build step), needs only to be conjugated - not
-retransformed - to serve as that child's correlation kernel during
+(Algorithm~\ref{alg:tree}, build step), needs only to be conjugated, not
+retransformed, to serve as that child's correlation kernel during
 propagation; this is the ``cached'' frequency-domain representation.
 Second, propagation at a node correlates the \emph{same} parent $g$-vector
 against both children's (cached, conjugated) spectra
 ($g^{(\ell)}_i \star P^{(\ell-1)}_{2i+1}$ and
 $g^{(\ell)}_i \star P^{(\ell-1)}_{2i}$), so a single forward FFT of
-$g^{(\ell)}_i$ - the ``paired'' share - suffices for both child updates
+$g^{(\ell)}_i$, the ``paired'' share, suffices for both child updates
 instead of transforming $g^{(\ell)}_i$ separately for each, halving the
 FFT count at this level relative to a naive implementation.
 
@@ -622,8 +628,8 @@ $m = B-2, \ldots, 0$,
 \]
 
 Both compute the same exact quotient in exact arithmetic; they differ only
-in the coefficient $c$ multiplying the running term each step - forward's
-$c_{\text{fwd}} = -(1-a_j)/a_j$, backward's $c_{\text{bwd}} = -a_j/(1-a_j)$ -
+in the coefficient $c$ multiplying the running term each step (forward's
+$c_{\text{fwd}} = -(1-a_j)/a_j$, backward's $c_{\text{bwd}} = -a_j/(1-a_j)$),
 which governs how a rounding error at step $m$ is amplified by step $m+1$.
 
 \begin{lemma}[Stability of bidirectional division]\label{lem:division-stability}
@@ -654,12 +660,12 @@ bidirectional division with $B \in \{8, 16, 24, 32, 48, 64, 96, 128, 192,
 256\}$ was tested against the $V_1$ exact reference across all
 \texttt{bench\_grid verify} sizes and stack distributions, including the
 adversarial near-$a_j = 0.5$ regime the lemma flags as riskiest. All
-tests passed with no error growth across the entire range (standard:
-$\max\ 1.18 \times 10^{-12}$ vs.\ $5 \times 10^{-12}$ tolerance;
-adversarial: $\max\ 1.54 \times 10^{-10}$ vs.\ $10^{-9}$ tolerance).
+tests passed with no error growth across the entire range, staying inside
+both the standard ($5 \times 10^{-12}$) and adversarial ($10^{-9}$)
+verification tolerances with margin to spare.
 Separately, an exhaustive block-size sweep on the same hardware found
 that $B = 32$ is typically the fastest choice, and larger $B$ values are
-never faster. The production candidate list
+never faster (Table~\ref{tab:constants}). The production candidate list
 $\{8, 16, 24, 32, 48, 64\}$ therefore caps at $64$ for performance
 reasons, not because of a hard correctness wall.
 
@@ -667,7 +673,7 @@ reasons, not because of a hard correctness wall.
 were tried on the CPU engines and rejected after benchmarking. Karatsuba
 multiplication for the block build was consistently slower: on FMA-capable
 hardware, schoolbook's \texttt{c[i+j] += a[i]*b[j]} is already one FMA per
-term, so Karatsuba's trade of multiplies for additions saves nothing - both
+term, so Karatsuba's trade of multiplies for additions saves nothing; both
 cost one cycle. FFTW's NEON codelets for FP64 were slower than Apple's
 vDSP on Apple Silicon, which is why vDSP is dispatched for FFT execution
 instead of FFTW at supported sizes on that platform
@@ -678,12 +684,14 @@ instead of FFTW at supported sizes on that platform
 Engine dispatch must decide, for each $(n,k)$ pair, whether to use the
 linear engine (memory-bound, $\bigO(nk)$) or the hybrid engine
 (compute-bound in the FFT phases, $\bigO(n \log^2 k)$). An earlier
-FMA-counting roofline model with harmonic-mean bandwidth blending correctly
-dispatched roughly 30/44 test cases on Zen~4: it had no knowledge of the
+FMA-counting roofline model with harmonic-mean bandwidth blending
+mispredicted the faster engine on a substantial minority of the tested
+cells on Zen~4: it had no knowledge of the
 cache hierarchy and could not distinguish L2-resident from DRAM-resident
-working sets. A later roofline model~\citep{williams2009} improved this to
-42/44 (95.5\%) by modeling cache-level bandwidths explicitly, but the two
-remaining misses occurred where the engines were within 3--9\% of each
+working sets. A later roofline model~\citep{williams2009} reduced the
+misses considerably by modeling cache-level bandwidths explicitly, but
+never eliminated them; the residual misses clustered where the engines
+were within a few percent of each
 other, and individual constants in the formula were validated against real
 embedded execution only to find that the aggregate comparison still did not
 match the true measured crossover on either M3~Pro or Zen~4 hardware.
@@ -691,8 +699,11 @@ match the true measured crossover on either M3~Pro or Zen~4 hardware.
 The replacement is an empirical crossover table: $N = 6$ calibrated $n$
 values with corresponding crossover $k$ values where linear and hybrid
 engines have equal measured runtime, determined offline by binary search on
-real timing (median of 7 repetitions, $Q = 256$). At runtime,
-\texttt{select\_engine}$(n,k)$ performs log-linear interpolation between
+real timing (median of 7 repetitions, $Q = 256$).\footnote{The resulting
+\texttt{crossover\_n[]}/\texttt{crossover\_k[]} tables ship verbatim in the
+per-device configuration headers of the released repository, so the
+calibrated values behind this paragraph can be read off directly.} At runtime,
+\texttt{select\_engine}\allowbreak$(n,k)$ performs log-linear interpolation between
 the two bracketing $n$ values in the \texttt{crossover\_n[]} table to
 obtain the crossover $k$ for the requested $n$, then dispatches to linear
 if $k$ is below the crossover and hybrid otherwise.  This is the same
@@ -703,11 +714,11 @@ cheap runtime threshold with no live racing in production.
 
 The block size $B$ for the hybrid engine is selected by the same principle:
 \texttt{select\_best\_B}$(n,k)$ performs a 2D nearest-neighbor lookup over
-a calibrated $(n,k,B)$ grid (2466 points for M3~Pro and 1944 for Zen~4), choosing the
+a calibrated $(n,k,B)$ grid (2,567 points for M3~Pro and 1,944 for Zen~4), choosing the
 empirically fastest $B \in \{8, 16, 24, 32, 48, 64\}$.  Unlike the
 crossover $k$, $B$ is a discrete choice with no meaningful interpolation
 between adjacent values.  Typical selections are $B = 32$ on both M3~Pro
-and Zen~4, with occasional $B = 24$ or $B = 48$ at specific $(n,k)$
+and Zen~4 (Table~\ref{tab:constants}), with occasional $B = 24$ or $B = 48$ at specific $(n,k)$
 combinations.
 
 Both tables (\texttt{crossover\_n[]}/\texttt{crossover\_k[]} and
@@ -725,16 +736,45 @@ register-blocking/unrolling parameters for one fixed small kernel size
 rather than building a size-indexed lookup table as done here.
 
 \paragraph{Validation.}
-\texttt{tools/validate\_dispatch.c} directly compares
-\texttt{select\_engine}$(n,k)$'s choice against the true faster engine
+\texttt{tools/validate\_dispatch.c} compares
+\texttt{select\_engine}\allowbreak$(n,k)$'s choice against the true faster engine
 (measured head to head, adaptive median-of-$N$ convergence) over the same
-$(n,k)$ grid as Table~\ref{tab:serial} -- 7 values of $n$ from $1{,}024$
+$(n,k)$ grid as Table~\ref{tab:serial}: 7 values of $n$ from $1{,}024$
 to $65{,}536$ crossed with $k \in \{10, 50, 100, n/4, n/2, n\}$, 42 cells.
 On M3~Pro, serial mode, dispatch was correct on all 40 cells completed in
 this evaluation run (the two largest, $n=65{,}536$ at $k=n/2$ and $k=n$,
 were not measured due to a runtime constraint in this environment, not a
 dispatch failure); the surrounding cells at that same $n$, including
 $k=n/4$, were all correct.
+
+\paragraph{Thread-count scope of the calibrated tables.}
+Both calibrated decisions are thread-count-blind:
+\texttt{select\_engine}\allowbreak$(n,k)$ and
+\texttt{select\_best\_B}\allowbreak$(n,k)$ take no thread count, and the
+offline tools that measure them (\texttt{calibrate\_crossover.c},
+\texttt{calibrate\_best\_b.c}) run single-threaded. The same tables
+therefore drive parallel execution, where only the quadrature loop is
+parallelized. This is a deliberate scoping decision rather than an
+oversight, and it is a possible suboptimality, so it is worth reporting
+what it actually costs. We ran the crossover sweep in both thread modes on
+both CPUs, over $n \in \{512, \ldots, 8192\}$ against 20 values of $k$, and
+the answer differs by platform.
+
+On M3~Pro the heuristic is free: the linear-to-hybrid transition falls at the
+same $k$ single-threaded and at 12 threads for every $n$ ($k = 80$ at
+$n = 512$, $k = 120$ for $n \ge 1024$), so the serially-calibrated crossover
+reproduces the parallel winner across the whole sweep.
+
+On Zen~4 it is not free. The parallel transition sits well below the serial
+one: hybrid already wins from $k \approx 200$ at $n = 4096$ and $n = 8192$
+(serially it does not win until $k \approx 240$--$260$), and at
+$n = 512$--$1024$ hybrid wins in parallel from $k \approx 40$--$80$. A
+serially-calibrated threshold therefore keeps selecting the linear engine
+across a band of $k$ where, at 16 threads, hybrid is already faster. The
+cost is bounded (it is a band, not a regime change, and both engines are
+within a small factor of each other there), but it is a real
+misdispatch, and it is the price of reusing one table for both modes. A
+thread-count-aware crossover table is the obvious fix and is not implemented.
 
 % ======================================================================
 \section{Theoretical Analysis}\label{sec:theory}
@@ -876,7 +916,7 @@ count, division latency; not by $n$ or $k$.  This is exactly what the
 empirical block-size sweep finds (Section~\ref{sec:experiments}): the
 wall-clock-optimal $B$ on Zen~4 is $B = 32$, constant across the entire
 tested $(n,k)$ grid, with no detectable dependence on $k$ over the range
-$k \in [10^2, 10^5]$ -- an independent experimental confirmation of
+$k \in [10^2, 10^5]$, an independent experimental confirmation of
 Corollary~\ref{cor:blocking-constant}.
 
 Numerical stability of the hybrid engine's within-block division is
@@ -893,7 +933,13 @@ Section~\ref{sec:hybrid} (Lemma~\ref{lem:division-stability}).
 \subsection{Experimental Setup}
 
 I evaluate the CPU implementation on two platforms (GPU hardware and setup
-are described separately in Section~\ref{sec:gpu-results}). All experiments
+are described separately in Section~\ref{sec:gpu-results}).\footnote{Prose
+figures quoted without an accompanying table (backend speedups,
+calibration point counts, sweep costs, and engineering-history
+measurements) are recorded, together with their generating tools and raw
+logs, in \texttt{RESULTS.md} and \texttt{VERDICTS.md} of the released
+repository.}
+All experiments
 use $Q = 256$ quadrature points, uniform chip stacks, and report the median
 of 5 repetitions. Correctness is verified against closed-form $V_1$ and
 $V_2$ equities (see Appendix) and cross-checked between engines.
@@ -907,7 +953,7 @@ $V_2$ equities (see Appendix) and cross-checked between engines.
     AVX-512 (8 FP64/vector), 2 FMA units per core, 1\,MB per-core L2,
     32\,MB shared L3. FFT: AOCL-FFTW, znver4-tuned, sole backend (no
     dual-library dispatch; see Related Work). Memory on this machine runs
-    at 3600\,MT/s rather than its DIMMs' 5600\,MT/s rating, an AM5
+    at 3600\,MT/s rather than its DIMMs' 4800\,MT/s rating, an AM5
     two-DIMMs-per-channel electrical limit rather than a configuration
     fault. Its effect on these results is not a flat scaling factor: the
     compute-bound linear engine is essentially unaffected, while the
@@ -921,8 +967,8 @@ $V_2$ equities (see Appendix) and cross-checked between engines.
 
 Tables~\ref{tab:serial} and~\ref{tab:parallel} report execution times
 across a grid of $(n, k)$ pairs. All numbers are from real measurements on
-the target hardware (\texttt{bench\_grid}; M3~Pro August 2, 2026, Zen~4
-July 27, 2026); none are estimated or borrowed. The best engine per cell is shown, with
+the target hardware (\texttt{bench\_grid}); none are estimated or
+borrowed. The best engine per cell is shown, with
 dispatch decisions made automatically by the empirical crossover table.
 
 \begin{table}[t]
@@ -939,20 +985,20 @@ dispatch decisions made automatically by the empirical crossover table.
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 1.70(L) & 7.17(L) & 13.1(L) & 18.0(H) & 21.2(H) & 28.0(H)
-      & 1.46(L) & 3.48(L) & 7.32(L) & 19.1(H) & 22.3(H) & 24.1(H) \\
-2048  & 4.12(L) & 14.4(L) & 26.3(L) & 44.9(H) & 52.1(H) & 56.4(H)
-      & 3.67(L) & 8.21(L) & 15.0(L) & 48.4(H) & 53.7(H) & 57.2(H) \\
-4096  & 8.24(L) & 28.7(L) & 52.5(L) & 109(H)  & 124(H)  & 137(H)
-      & 7.39(L) & 17.8(L) & 25.8(L) & 115(H)  & 128(H)  & 139(H) \\
-8192  & 16.4(L) & 57.2(L) & 105(L)  & 284(H)  & 302(H)  & 321(H)
-      & 13.4(L) & 34.3(L) & 53.6(L) & 277(H)  & 315(H)  & 341(H) \\
-16384 & 32.7(L) & 114(L)  & 210(L)  & 636(H)  & 712(H)  & 753(H)
-      & 29.6(L) & 56.9(L) & 117(L)  & 667(H)  & 743(H)  & 810(H) \\
-32768 & 64.8(L) & 232(L)  & 417(L)  & 1490(H) & 1660(H) & 1790(H)
-      & 62.3(L) & 131(L)  & 218(L)  & 1570(H) & 1790(H) & 1950(H) \\
-65536 & 133(L)  & 460(L)  & 834(L)  & 3500(H) & 3910(H) & 4150(H)
-      & 118(L)  & 266(L)  & 411(L)  & 4110(H) & 4750(H) & 5110(H) \\
+1024  & 1.71(L) & 7.05(L) & 13.0(L) & 17.8(H) & 20.9(H) & 29.5(T)
+      & 1.33(L) & 3.53(L) & 7.54(L) & 15.8(H) & 17.3(H) & 19.7(H) \\
+2048  & 4.80(L) & 14.5(L) & 26.1(L) & 45.3(H) & 51.4(H) & 55.8(H)
+      & 3.11(L) & 6.99(L) & 13.9(L) & 36.3(H) & 39.3(H) & 45.0(H) \\
+4096  & 8.14(L) & 28.1(L) & 51.9(L) & 108(H)  & 122(H)  & 135(H)
+      & 6.21(L) & 15.0(L) & 28.5(L) & 82.6(H) & 95.0(H) & 103(H) \\
+8192  & 16.2(L) & 56.2(L) & 105(L)  & 280(H)  & 298(H)  & 320(H)
+      & 12.6(L) & 31.5(L) & 57.9(L) & 194(H)  & 206(H)  & 232(H) \\
+16384 & 32.3(L) & 116(L)  & 208(L)  & 625(H)  & 701(H)  & 751(H)
+      & 25.5(L) & 74.0(L) & 127(L)  & 442(H)  & 484(H)  & 525(H) \\
+32768 & 64.9(L) & 227(L)  & 415(L)  & 1470(H) & 1650(H) & 1760(H)
+      & 52.9(L) & 118(L)  & 252(L)  & 991(H)  & 1060(H) & 1240(H) \\
+65536 & 130(L)  & 451(L)  & 830(L)  & 3460(H) & 3820(H) & 4060(H)
+      & 107(L)  & 252(L)  & 727(L)  & 2570(H) & 2850(H) & 3160(H) \\
 \bottomrule
 \end{tabular}%
 }
@@ -973,18 +1019,18 @@ $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
 $n$ & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$
     & $k{=}10$ & $k{=}50$ & $k{=}100$ & $k{=}n/4$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
-1024  & 0.338(L) & 1.23(L)  & 2.24(H)  & 2.42(H)  & 2.83(H)  & 3.94(H)
-      & 0.121(L) & 0.359(L) & 1.21(L)  & 1.41(H)  & 1.66(H)  & 1.78(H) \\
-4096  & 1.37(L)  & 4.80(L)  & 8.70(L)  & 14.6(H)  & 16.8(H)  & 18.0(H)
-      & 0.651(L) & 1.48(L)  & 2.35(L)  & 8.40(H)  & 9.36(H)  & 10.1(H) \\
-8192  & 2.71(L)  & 9.46(L)  & 16.4(H)  & 40.6(H)  & 41.3(H)  & 44.5(H)
-      & 1.23(L)  & 2.84(L)  & 4.63(L)  & 20.4(H)  & 24.2(H)  & 28.1(H) \\
-16384 & 5.38(L)  & 18.8(L)  & 33.6(H)  & 88.3(H)  & 98.4(H)  & 108(H)
-      & 2.37(L)  & 6.43(L)  & 9.69(L)  & 88.1(H)  & 112(H)   & 142(H) \\
-32768 & 10.8(L)  & 37.8(L)  & 71.4(L)  & 205(H)   & 237(H)   & 258(H)
-      & 6.04(L)  & 13.6(L)  & 23.6(L)  & 280(H)   & 314(H)   & 363(H) \\
-65536 & 21.1(L)  & 76.1(L)  & 138(H)   & 510(H)   & 578(H)   & 647(H)
-      & 21.0(L)  & 30.4(L)  & 48.4(L)  & 627(H)   & 729(H)   & 901(H) \\
+1024  & 0.319(L) & 1.25(L)  & 2.03(H)  & 2.35(H)  & 2.79(H)  & 3.73(H)
+      & 0.129(L) & 0.350(L) & 0.610(L) & 1.11(H)  & 1.25(H)  & 1.49(H) \\
+4096  & 1.36(L)  & 4.93(L)  & 8.65(H)  & 14.4(H)  & 16.6(H)  & 18.4(H)
+      & 0.615(L) & 1.40(L)  & 2.34(L)  & 5.92(H)  & 6.69(H)  & 7.40(H) \\
+8192  & 2.72(L)  & 9.62(L)  & 16.4(H)  & 38.0(H)  & 41.0(H)  & 47.2(H)
+      & 1.25(L)  & 3.37(L)  & 5.02(L)  & 13.8(H)  & 15.7(H)  & 26.9(H) \\
+16384 & 5.40(L)  & 19.0(L)  & 32.7(H)  & 86.6(H)  & 97.1(H)  & 105(H)
+      & 2.47(L)  & 5.49(L)  & 9.73(L)  & 85.8(H)  & 116(H)   & 157(H) \\
+32768 & 10.8(L)  & 38.2(L)  & 68.9(L)  & 208(H)   & 238(H)   & 261(H)
+      & 5.61(L)  & 11.8(L)  & 18.9(L)  & 247(H)   & 275(H)   & 389(H) \\
+65536 & 21.9(L)  & 79.2(L)  & 140(H)   & 512(H)   & 575(H)   & 627(H)
+      & 20.2(L)  & 30.1(L)  & 45.7(L)  & 606(H)   & 701(H)   & 862(H) \\
 \bottomrule
 \end{tabular}%
 }
@@ -1011,51 +1057,27 @@ integration of NEON SIMD throughout the linear engine's batched path
 ($B_Q = 8$ quadrature points interleaved).
 
 \paragraph{Parallel scaling asymmetry.}
-The two engines scale differently on 16 Zen~4 cores. The reference box was
-redeployed 2026-07-27 in a 2-DIMMs-per-channel (\emph{2DPC}) configuration,
-an AMD AM5 electrical limit that caps RAM at 3600\,MT/s against a higher
-DIMM rating; the earlier \emph{1DPC} configuration ran at full rated
-bandwidth. This is kept as two datasets rather than one, because the
-effect is not a flat percentage: linear/schoolbook timings are nearly
-unchanged between the two ($\sim$0.97--1.0$\times$) while hybrid/FFT
-timings are 40--65\% slower under 2DPC at large $k$. Figure~\ref{fig:1dpc-2dpc}
-shows the two eras' one-second contours side by side. Restricted to
-$(n,k)$ cells where the same engine wins in both the serial and parallel
-grids (isolating the scaling effect from a shifting engine choice), the
-linear engine's median parallel speedup is $9.7\times$ on the 2DPC
-reference box and $9.8\times$ on 1DPC, while the hybrid engine's is
-$13.1\times$ and $12.6\times$ respectively -- hybrid scales somewhat
-better than linear across the range measured. This is not uniform across
-$n$: at $n = 65{,}536$ specifically (2DPC), linear's speedup ranges
-$5.6$--$8.75\times$ and hybrid's $5.67$--$6.56\times$, comparable to each
-other rather than showing the gap the medians suggest.
-The per-core L2 capacity argument for the linear engine's checkpointing
-still holds (Zen~4: $16 \times 131.5 \approx 2{,}104$\,GB/s aggregate
-streaming bandwidth if every thread stayed L2-resident, Table~\ref{tab:constants}),
-but does not by itself explain the magnitude gap between the two
-engines; identifying the mechanism is open follow-up work.
+The two engines scale differently on 16 Zen~4 cores. The reference box runs
+a 2-DIMMs-per-channel (2DPC) configuration, an AMD AM5 electrical limit that
+caps RAM at 3600\,MT/s against a 4800\,MT/s DIMM rating (confirmed via
+\texttt{dmidecode}; measured streaming DRAM bandwidth is 32.7\,GB/s,
+consistent with genuine 3600\,MT/s operation). At the one-second boundary,
+parallel speedup varies with $k$: $3.8\times$ at $k=2$, $8.0\times$ at
+$k=100$, dropping to $2.8$--$3.2\times$ for $k \geq 1{,}000$ once the hybrid
+engine's FFT phase becomes memory-bandwidth-bound rather than compute-bound
+(full table in \texttt{RESULTS.md}). Across the general performance grid at
+moderate $n$, parallel speedup reaches 10--14$\times$ for both engines
+(Tables~\ref{tab:serial} and~\ref{tab:parallel}); it
+degrades specifically at large $n$ ($n \geq 16{,}384$) where the working set
+outgrows cache and 16 threads compete for the same 3600\,MT/s ceiling that
+already limits single-threaded bandwidth-bound cells.
 
-This asymmetry creates a sharp cliff at the linear-to-hybrid transition,
-which on Zen~4 falls between $k = 100$ and $k = 200$: the parallel linear
-engine at $k = 100$ handles 906{,}259 players within one second, but the
-parallel hybrid engine at $k = 200$ handles only 195{,}356 - a
-$4.6\times$ drop that reflects the bandwidth regime change, not an
-algorithmic deficiency. The serial contour shows the same transition at the
-same $k$ and in the same direction (117{,}264 at $k = 100$ falling to
-45{,}085 at $k = 200$), but a shallower $2.6\times$ drop, since a single
-thread does not saturate the DRAM bus.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.6\textwidth]{../ICM/results/zen4_1dpc_vs_2dpc.png}
-  \caption{Zen~4 one-second contour, 1DPC (full memory bandwidth) vs.\ 2DPC
-    (the standing reference configuration, 3600\,MT/s ceiling), serial,
-    $Q = 256$. The two curves diverge at large $k$, where the hybrid
-    engine's FFT phase is bandwidth-bound; they nearly coincide at small
-    $k$, where the linear engine dominates and is largely
-    bandwidth-insensitive.}
-  \label{fig:1dpc-2dpc}
-\end{figure}
+\paragraph{One-second frontier.}
+Locating the one-second boundary by direct binary search on measured time,
+rather than interpolating the grid, gives the frontier plotted in
+Figure~\ref{fig:contour}: at $k = n$ the Zen~4 reference machine reaches
+$n = 26{,}816$ single-threaded and $n = 65{,}536$ at 16 threads, and
+M3~Pro reaches $n = 18{,}368$ and $n = 88{,}064$ respectively.
 
 \begin{figure}[t]
   \centering
@@ -1099,8 +1121,8 @@ thread does not saturate the DRAM bus.
 
 \subsection{Quadrature Accuracy}\label{sec:accuracy}
 
-The erfc-trap quadrature rule - trapezoidal rule after the change of
-variables $v = \Phi(y)$ - achieves exponential convergence for smooth
+The erfc-trap quadrature rule (trapezoidal rule after the change of
+variables $v = \Phi(y)$) achieves exponential convergence for smooth
 integrands~\citep{trefethen2014}. I compare it against tanh-sinh
 (double-exponential) quadrature~\citep{mori2001} across four stack
 distributions:
@@ -1146,15 +1168,18 @@ $Q$ & Gauss & TS & Gauss & TS & Gauss & TS & Gauss & TS \\
 \end{table}
 
 Three findings emerge. First, erfc-trap converges to ${\sim}10^{-12}$
-relative error by $Q = 128$ on uniform and adversarial stacks, and by
-$Q = 256$ on the more demanding geometric and extreme distributions. At
+relative error by $Q = 128$ on uniform stacks; the adversarial and
+geometric distributions reach that level only at $Q = 256$, and the
+extreme $10^9$ distribution bottoms out roughly two orders of magnitude
+above it at the same $Q$. At
 the $Q = 256$ production default, all distributions achieve relative error
 below $1.6 \times 10^{-10}$.
 
 Second, tanh-sinh achieves a lower error floor on uniform distributions
 (${\sim}10^{-14}$ at $Q = 256$) but degrades catastrophically at extreme
-ratios, reaching only $6.5 \times 10^{-6}$ on the $10^9$ extreme case and
-failing to improve further at $Q = 1024$. The double-exponential
+ratios, reaching only $6.5 \times 10^{-6}$ on the $10^9$ extreme case at
+$Q = 256$. It does keep improving as $Q$ grows further, but plateaus
+several orders of magnitude above the erfc-trap floor. The double-exponential
 substitution's strip of analyticity narrows as $S_{\max}/S_{\min}$ grows;
 beyond some threshold, convergence fails entirely.
 
@@ -1162,8 +1187,8 @@ Third, this failure mode drove the choice of quadrature scheme. In the
 typical case, tanh-sinh is the better method. But a general-purpose ICM
 library must handle arbitrary stack distributions, including cases where
 one player holds $10^9$ times as many chips as another. Gaussian
-quadrature's uniform reliability - it keeps converging, predictably, all
-the way to the $10^9$ bound - was judged more valuable than better
+quadrature's uniform reliability (it keeps converging, predictably, all
+the way to the $10^9$ bound) was judged more valuable than better
 average-case precision.
 
 \begin{figure}[t]
@@ -1196,6 +1221,7 @@ library (Section~\ref{sec:calib-methodology}).
 \centering
 \caption{Platform calibration constants live in \texttt{libicm.a}'s dispatch path.}
 \label{tab:constants}
+\small
 \begin{tabular}{@{}lrrl@{}}
 \toprule
 \textbf{Constant} & \textbf{M3 Pro} & \textbf{Zen 4} & \textbf{Description} \\
@@ -1204,7 +1230,7 @@ $\texttt{WRAP\_FMA\_NS}$ (ns) & 0.516 & 0.436 & Wrap-correction FMA cost \\
 $\texttt{PAIRED\_CACHED\_CORR\_RATIO}$ & 1.560 & 1.547 & Paired cached correlate / full pipeline \\
 $\texttt{INDEP\_PAIR\_RATIO}$ & 2.440 & 2.440 & \texttt{correlate\_fft\_pair} / full pipeline \\
 $L_2$ (bytes) & 1\,MB & 1\,MB & Per-core L2, sizes checkpointing \\
-B-selection table & 2{,}563 pts & 1{,}944 pts & Empirical $(n,k,B)$ lookup size \\
+B-selection table & 2{,}567 pts & 1{,}944 pts & Empirical $(n,k,B)$ lookup size \\
 Typical $B$ & 32 & 32 & Most common empirical block size \\
 FFT backend & FFTW+vDSP & AOCL (sole) & Library dispatch \\
 \bottomrule
@@ -1238,14 +1264,14 @@ two algorithms, measured empirically per machine.
 
 \paragraph{Wrap-correction cost.}
 The tree engine's wrap correction (Algorithm~\ref{alg:tree}) corrects
-aliasing wraparound when truncated polynomial multiplication is
+aliasing wrap\-around when truncated polynomial multiplication is
 performed via FFT with a transform size smaller than the full linear
 convolution length. Its cost, parameterized by
 $\texttt{WRAP\_FMA\_NS}$, is measured by an isolated microbenchmark
 (\texttt{tools/bench\_wrap\_fma.c}) that executes the production
 wrap-correction inner loop verbatim, sweeping the wrap range over
 $[4, 2048]$ across three polynomial-size regimes so that the correction
-dominates the measured time by construction ($R^2 = 0.9998$). The
+dominates the measured time by construction ($R^2 = 0.9998$ on Zen~4). The
 result (Figure~\ref{fig:wrap-curve}) is a genuine cache-hierarchy
 transition curve: the marginal cost rises from ${\sim}0.26$\,ns/FMA at
 small wrap ranges (L1/L2-resident) to ${\sim}0.53$\,ns/FMA at large
@@ -1267,15 +1293,6 @@ ${\sim}0.36$--$0.45$\,ns/FMA.
     $\texttt{wrap\_m} \in [64, 384]$ operating window.}
   \label{fig:wrap-curve}
 \end{figure}
-
-\paragraph{Disclosure: point-estimate approximation.}
-The shipped $\texttt{WRAP\_FMA\_NS}$ values, $0.436$ on Zen~4 and
-$0.516$ on Apple M3~Pro, are representative point estimates from the
-$\texttt{wrap\_m} \in [64, 384]$ operating window, not a fully
-piecewise model of the cache-hierarchy transition in
-Figure~\ref{fig:wrap-curve}. The single-constant approximation has
-proved sufficient in practice (dispatch accuracy 42/44 on Zen~4,
-Section~\ref{sec:dispatch}).
 
 \paragraph{FP64 division latency.}
 $\texttt{FP64\_DIV\_NS}$ is measured by a dedicated dependency-chained
@@ -1299,8 +1316,8 @@ mask construction and per-node branch checks.
 
 Table~\ref{tab:subset} reports speedups measured on both platforms. The
 pruning delivers a net win across the tested range of $n$ at low target
-fractions on both, topping out at ${\sim}1.5\times$ on M3~Pro and
-${\sim}1.3\times$ on Zen~4 at low targets, and fading toward breakeven (or
+fractions on both, topping out at ${\sim}1.33\times$ on M3~Pro and
+${\sim}1.34\times$ on Zen~4 at low targets, and fading toward breakeven (or
 a slight loss at $n \ge 16{,}384$ on Zen~4) as the target fraction
 approaches 100\%.
 
@@ -1314,14 +1331,14 @@ approaches 100\%.
 \toprule
 $n$ & Speedup @1\% targets & Speedup @5--10\% targets & Speedup @$\ge$25\% targets \\
 \midrule
-1024  & 1.49 & 1.17--1.21 & 1.00--1.15 \\
-      & 1.25 & 1.22--1.23 & 1.11--1.17 \\
-4096  & 1.24 & 1.11--1.13 & 0.99--1.09 \\
-      & 1.29 & 1.14--1.16 & 1.00--1.11 \\
-16384 & 1.16 & 1.10        & 1.00--1.08 \\
-      & 1.14 & 1.04--1.07  & 0.98--1.03 \\
-65536 & 1.09 & 1.05        & 1.00--1.03 \\
-      & 1.11 & 1.05--1.06  & 0.99--1.04 \\
+1024  & 1.33 & 1.12--1.14 & 0.99--1.10 \\
+      & 1.23 & 1.19--1.20 & 1.01--1.18 \\
+4096  & 1.22 & 1.10--1.12 & 0.99--1.08 \\
+      & 1.34 & 1.20--1.23 & 1.01--1.17 \\
+16384 & 1.15 & 1.06--1.07  & 0.99--1.04 \\
+      & 1.18 & 1.09        & 0.99--1.06 \\
+65536 & 1.11 & 1.05--1.06  & 1.00--1.03 \\
+      & 1.17 & 1.10        & 1.01--1.08 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1343,7 +1360,7 @@ independent, map naturally to GPU execution at scale.
 
 The tree's level-by-level structure becomes a sequence of batched kernel
 launches. At the bottom levels of a tree with $n = 1{,}572{,}864$ leaves
-and $Q = 256$, this yields millions of independent operations - far more
+and $Q = 256$, this yields millions of independent operations, far more
 than needed to saturate the GPU's streaming multiprocessors.
 
 \subsection{Three-Tier Kernel Dispatch}
@@ -1362,7 +1379,7 @@ tiers based on polynomial degree:
 \end{itemize}
 
 The entire multi-level execution sequence, spanning dozens of kernel launches
-across all three tiers - is captured into a single CUDA Graph and replayed
+across all three tiers, is captured into a single CUDA Graph and replayed
 with negligible launch overhead.
 
 \subsection{Key Optimizations}
@@ -1391,8 +1408,8 @@ Two approaches were tested and rejected after benchmarking:
     cuFFT's load/store callbacks was rejected on accuracy grounds, not
     speed: per-element callback rounding compounds across tree levels to
     ${\sim}2\%$ error, despite being within cuFFT's own accuracy
-    specification -- unacceptable given this algorithm's FP64 requirement
-    (Section~\ref{sec:experiments}).
+    specification. That is unacceptable given this algorithm's FP64
+    requirement (Section~\ref{sec:experiments}).
   \item \textbf{$B = 1$ balanced tree:} Using single-player leaves (no
     block structure) was substantially slower because the tree performs
     more FMA operations and adds kernel launch barriers.
@@ -1402,15 +1419,16 @@ Two approaches were tested and rejected after benchmarking:
 
 Block-size selection on GPU follows the same empirical-lookup principle as
 the CPU (Section~\ref{sec:dispatch}): \texttt{gpu\_empirical\_best\_B}$(n,k)$
-performs a joint $(n,k)$ nearest-neighbor lookup over a calibrated
-\texttt{gbselect\_n[]}/\texttt{gbselect\_k[]}/\texttt{gbselect\_B[]} table, in
-log space, exactly mirroring the CPU's \texttt{select\_best\_B}. An
+performs a joint $(n,k)$ nearest-neighbor lookup, in log space, over a
+calibrated \texttt{gbselect} table: three parallel arrays holding, for each
+calibration point, the sampled $n$, the sampled $k$, and the measured
+winning $B$. This exactly mirrors the CPU's \texttt{select\_best\_B}. An
 analytical fallback (summed FMA/FFT cost estimation) remains in
 \texttt{gpu\_select\_best\_B\_est} for the case where no calibrated candidate
 satisfies the $(n,k)$ bounds at all; in normal operation this path is not
 exercised. Engine dispatch (linear vs.\ hybrid) is the one GPU decision that
 still compares candidates analytically rather than from a measured table, but
-it never selects linear across the full 210-cell calibrated heatmap --
+it never selects linear across the full 210-cell calibrated heatmap,
 consistent with Section~\ref{sec:gpu}'s observation that the linear engine's
 sequential structure cannot compete with the tree engines' parallelism at any
 GPU-relevant size.
@@ -1422,8 +1440,8 @@ Unlike the CPU tables, the GPU B-selection table above the $k = n$ frontier
 calibration heatmap itself, to cost roughly 4.5 hours and \$28 of rented
 B200 time, with $n = 33{,}554{,}432$ alone accounting for 54\% of total
 heatmap compute. Instead, 13 targeted anchor points
-($n \in \{2\text{M}, 4\text{M}, 8.4\text{M}\}$ at $k = n/8, n/4, n/2, n$, plus
-$n = 16.7\text{M}$ at $k = n$ only) were measured directly with
+($n \in \{2\text{M}, 4\text{M}, 8.4\text{M}\}$ at $k = n/8$, $n/4$, $n/2$,
+$n$, plus $n = 16.7\text{M}$ at $k = n$ only) were measured directly with
 \texttt{calibrate\_gpu\_best\_b.cu --narrow-around}; all 13 converged
 uniformly on $B = 128$. The full adaptive calibration tooling
 (\texttt{calibrate\_adaptive.py}) works and is available for third parties
@@ -1438,7 +1456,7 @@ converged measurement oracle as the rest of the pipeline, and
 auto-reverts to the pre-run snapshot if the canaries regress (more than
 2\% in aggregate, or more than 5\% on any single point). This prevents a
 noisy or under-sampled calibration run from silently shipping a
-regression. It does not itself densify sampling in a given region --
+regression. It does not itself densify sampling in a given region;
 the $n = 1{,}024$--$524{,}288$ region of the GPU B-selection table
 remains an open item for future calibration work.
 
@@ -1457,7 +1475,7 @@ Tables~\ref{tab:serial}--\ref{tab:parallel} so the CPU and GPU results are
 directly comparable. Table~\ref{tab:gpu-frontier} separately reports the
 one-second threshold located by a dedicated binary search on measured time
 (\texttt{tools/threshold\_search\_gpu.cu}, median of 5 repetitions per
-candidate $n$) rather than by interpolating the systematic grid - these are
+candidate $n$) rather than by interpolating the systematic grid; these are
 the specific $n$ values that pin down the 1-second boundaries quoted below,
 and are not a subsample of Table~\ref{tab:gpu}.
 
@@ -1472,10 +1490,10 @@ $n$ & $k{=}64$ & $k{=}1024$ & $k{=}n/2$ & $k{=}n$ \\
 \midrule
 4{,}096        & 0.37     & 0.76     & 0.87      & 0.89 \\
 16{,}384       & 1.18     & 2.81     & 3.93      & 4.17 \\
-65{,}536       & 4.29     & 9.46     & 19.43     & 20.26 \\
-262{,}144      & 16.58    & 36.38    & 95.95     & 100.09 \\
-1{,}048{,}576  & 65.68    & 178.26   & 504.29    & 509.51 \\
-4{,}194{,}304  & 272.47   & 671.06   & 2{,}352.43 & 2{,}320.45 \\
+65{,}536       & 4.29     & 10.62    & 19.43     & 20.26 \\
+262{,}144      & 16.58    & 41.01    & 95.95     & 100.09 \\
+1{,}048{,}576  & 65.68    & 178.26   & 501.84    & 507.90 \\
+4{,}194{,}304  & 272.47   & 753.65   & 2{,}352.43 & 2{,}320.45 \\
 33{,}554{,}432 & 2{,}506.71 & 5{,}059.26 & 22{,}321.49 & 22{,}865.76 \\
 \bottomrule
 \end{tabular}
@@ -1492,8 +1510,8 @@ $n$ & $k{=}64$ & $k{=}1024$ & $k{=}n/2$ & $k{=}n$ \\
 \toprule
 Curve & $n$ & Time (ms) \\
 \midrule
-$k = n$   & 1{,}490{,}944 & 918.8 \\
-          & 1{,}506{,}304 & 1{,}124.2 \\
+$k = n$   & 1{,}490{,}944 & 943.9 \\
+          & 1{,}506{,}304 & 1{,}150.5 \\
 \addlinespace
 $k = 100$ & 7{,}975{,}936 & 998.9 \\
           & 7{,}991{,}296 & 1{,}001.1 \\
@@ -1514,12 +1532,42 @@ $k = 100$ & 7{,}975{,}936 & 998.9 \\
 
 At $k = n$, the GPU computes all 262{,}144 player equities in 100.1\,ms.
 The under-one-second frontier for $k = n$ is $n = 1{,}490{,}944$
-(918.8\,ms); the next candidate the search probed above it,
-$n = 1{,}506{,}304$, crosses to 1{,}124.2\,ms. At $k = 100$ the frontier
+(943.9\,ms); the next candidate the search probed above it,
+$n = 1{,}506{,}304$, crosses to 1{,}150.5\,ms. At $k = 100$ the frontier
 reaches $n = 7{,}975{,}936$ players (998.9\,ms). The frontier is limited by
 VRAM at large $k$ and by tree-level cliffs at large $n$.
 
 % ======================================================================
+\section{Limitations}\label{sec:limitations}
+
+Three scope limitations are worth stating explicitly.
+
+\textbf{Single GPU device.} All GPU measurements come from one NVIDIA
+B200. The build parameterizes the cuFFTDx kernel instantiations by target
+architecture (per-architecture FFT-size support is gated by
+\texttt{cufftdx::is\_supported}), and the calibration tooling generates a
+per-device configuration for any CUDA-capable card, but only sm\_100 has
+been calibrated and benchmarked end to end; sm\_90 and sm\_89 builds are
+compile-verified only.
+
+\textbf{GPU calibration scope.} The GPU block-size calibration uses
+targeted anchors rather than the full adaptive sweep the CPU tables
+received, a deliberate cost decision (one full sweep at B200 large-$n$
+costs roughly \$28 of rental time), not an oversight; the full sweep
+tooling ships and works for third parties porting to their own hardware.
+One known consequence is disclosed in the repository's RESULTS.md: a
+single cell of the 210-cell heatmap dispatches a measurably suboptimal
+block size.
+
+\textbf{FP64 only.} Double precision is a requirement, not a default: the
+leaf values cluster near $a_j \approx 0.5$, where the analysis of
+Section~\ref{sec:algorithm} bounds synthetic-division error amplification
+only at FP64's machine epsilon, and the quadrature's exponential
+convergence targets double-precision accuracy by construction. The GPU
+throughput reported here therefore cannot be traded against precision
+(e.g.\ FP32 tensor throughput) without giving up the exactness guarantees
+that motivate the method.
+
 \section{Conclusion}\label{sec:conclusion}
 % ======================================================================
 
@@ -1538,25 +1586,28 @@ propagation for free. The dominant cost throughout is data movement, not
 arithmetic: the empirical dispatch table, L2-aware checkpointing, and the
 GPU's FFT-stride layout all exist because moving data between cache levels
 is the binding constraint, not the FMA count. And the cost model and FFT
-dispatch decisions throughout - per-size FFT timing, per-level cache
-bandwidths, dual-library selection - are driven by direct calibration
+dispatch decisions throughout (per-size FFT timing, per-level cache
+bandwidths, dual-library selection) are driven by direct calibration
 against measured hardware behavior rather than predicted from first-principles
 constants, because measuring turned out to be cheaper and more reliable
 than modeling it a priori.
 
 On the CPU, the batched linear and hybrid engines compute exact equities
-for up to 17,984 players in one second, single-threaded, on AMD Zen~4. A
-CUDA implementation for NVIDIA B200 extends this to roughly 1.5 million
-players in about a second, enabling ICM analysis at field sizes that were
-previously intractable.
+for up to 26,816 players in one second single-threaded, and 65,536 across
+16 threads, on our AMD Zen~4 reference machine (18,368 and 88,064
+respectively on Apple M3~Pro; Section~\ref{sec:experiments}). A CUDA
+implementation for NVIDIA B200
+extends this to roughly 1.5 million players in about a second
+(Table~\ref{tab:gpu-frontier}), enabling
+ICM analysis at field sizes that were previously intractable.
 
 Future work includes exploring real-time tournament decision support where
 subset equity queries can exploit the active-player masking already present
 in the implementation. A more speculative direction: since the propagation
 phase is already reverse-mode automatic differentiation of the build phase
 (Section~\ref{sec:tree}), and $a_j(v) = v^{S_j}$ is itself differentiable
-in $S_j$, extending this AD lens one step further - differentiating through
-the quadrature integral itself - would give exact gradients
+in $S_j$, extending this AD lens one step further, differentiating through
+the quadrature integral itself, would give exact gradients
 $\partial E_i / \partial S_j$ at the same $\bigO(Qn\log^2 k)$ cost as the
 equities themselves, potentially useful as a differentiable ICM node in
 gradient-based tournament-strategy training objectives.
@@ -1570,8 +1621,8 @@ gradient-based tournament-strategy training objectives.
 
 The library is validated against exact closed-form reference values for two
 special payout structures. Both follow from a single combinatorial identity
-applied at different orders, combined with linearity of expectation - not
-from enumerating elimination orderings - and are exact for any $n$.
+applied at different orders, combined with linearity of expectation (not
+from enumerating elimination orderings), and are exact for any $n$.
 
 Write player $i$'s finishing position as $m = M + 1$, where $M$ is the
 (random) number of other players who finish ahead of $i$ ($M = 0$ is first
@@ -1582,8 +1633,8 @@ realized outcome,
   \binom{n-1-M}{t} = \sum_{\substack{T \subseteq [n]\setminus\{i\} \\ |T| = t}}
   \mathbf{1}[i \text{ finishes better than every player in } T],
 \end{equation}
-since this is exactly choosing $t$ of the $n-1-M$ players ranked below $i$ -
-no probability is involved yet, it is a counting identity on one outcome.
+since this is exactly choosing $t$ of the $n-1-M$ players ranked below $i$.
+No probability is involved yet; it is a counting identity on one outcome.
 Taking expectations and applying linearity term-by-term to the sum of
 indicators on the right (valid regardless of how the indicator events are
 correlated with each other):
